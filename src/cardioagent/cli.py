@@ -42,6 +42,16 @@ def arguments() -> argparse.Namespace:
     from .policy.state import TASKS
     from .policy.value import BASELINES as V23_BASELINES
 
+    sub = commands.add_parser("list-ecg-tools", help="Export versioned tool catalog and JSON schemas")
+    sub.add_argument("--experimental", action="store_true")
+    sub = commands.add_parser("call-ecg-tool", help="Execute one registered ECG tool locally")
+    sub.add_argument("tool")
+    sub.add_argument("--record", type=Path, required=True)
+    sub.add_argument("--lead", required=True)
+    sub.add_argument("--start", type=float, default=0.)
+    sub.add_argument("--end", type=float, required=True)
+    sub.add_argument("--experimental", action="store_true")
+
     for command in ("ecg-agent", "audit-ecg-agent"):
         sub = commands.add_parser(command, help="ECG-only streaming measurement agent")
         sub.add_argument("--chunk-s", type=float, default=30.)
@@ -227,6 +237,37 @@ def main() -> None:
     stamp = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid4().hex[:8]}"
     output = args.output / stamp
     try:
+        if args.command in ("list-ecg-tools", "call-ecg-tool"):
+            from .ecg_agent.toolkit import build_registry, ToolContext, ToolSession
+            registry = build_registry()
+            if args.command == "list-ecg-tools":
+                result = {"tools":registry.schemas(args.experimental),
+                          "function_tools":registry.function_schemas(args.experimental)}
+                name = 'ecg_tool_catalog.json'
+            else:
+                import math
+                from .ecg_agent.evaluation import read_ecg
+                from .recording import Waveform
+                if not (math.isfinite(args.start) and math.isfinite(args.end) and 0 <= args.start < args.end):
+                    raise ValueError('Require finite 0 <= start < end')
+                wave = read_ecg(args.record)
+                if args.end > wave.duration:
+                    raise ValueError('end exceeds ECG duration')
+                # Provide a copied elapsed block, not the rest of the record.
+                first = max(0, math.ceil(args.start*wave.fs-1e-8))
+                last = min(len(wave.values), math.ceil(args.end*wave.fs-1e-8))
+                block = Waveform(wave.values[first:last].copy(), wave.fs, wave.channels, wave.units)
+                origin = first/wave.fs
+                result = ToolSession(ToolContext(block,origin,origin+block.duration),
+                                     allow_experimental=args.experimental).call(
+                    args.tool, {"lead":args.lead,"start_s":origin,"end_s":origin+block.duration})
+                name = 'ecg_tool_result.json'
+            output.mkdir(parents=True, exist_ok=False)
+            save_json(output / name, result)
+            print(f"ECG tools: {output.resolve() / name}")
+            if args.command == "call-ecg-tool" and result['status'] == 'error':
+                raise SystemExit(2)
+            return
         if args.command in ("ecg-agent", "audit-ecg-agent"):
             from .ecg_agent import Config, ECGAgent
             from .ecg_agent.evaluation import audit, read_ecg

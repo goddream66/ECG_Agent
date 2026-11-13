@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/CuCl-2/ECG-Scroll",
+  "local_commit": "4db14ef59d8ee78de785c12a7d4644c9c8e3dc0f",
+  "local_file": "ecg/tools.py",
+  "sha256": "037adac91d8280c5b1879d36af3f77d5f6c5c9e9562ba7a3b02d55f2a3948644",
+  "destination": "src/cardioagent/ecg_agent/toolkit/measurements.py",
+  "migration": "adapted, not an exact source copy"
+}

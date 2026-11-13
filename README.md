@@ -109,3 +109,13 @@ V2.4.2 冻结策略机制诊断：见 [V2_4_2_STATUS.md](V2_4_2_STATUS.md)，包
 
 
 当前优先开发 ECG 单智能体：见 [ECG_AGENT_V1_STATUS.md](ECG_AGENT_V1_STATUS.md)。新增 `ecg-agent` 推理及 `audit-ecg-agent` 独立心搏标注评价命令。
+
+
+ECG 工具工程化入口：
+- [架构与目录](docs/ARCHITECTURE.md)
+- [工具开发与调用](docs/TOOL_DEVELOPMENT.md)
+- [工具目录](configs/ecg_tools_v1.json)
+- [开发规范](CONTRIBUTING.md)
+- [第三方来源](THIRD_PARTY_NOTICES.md)
+
+默认只开放质量、心搏、RR 和粗扫描工具；P/QRS/ST/T/QT 代理测量需显式启用 experimental。

@@ -4,7 +4,7 @@ from time import perf_counter
 import math
 import numpy as np
 from ..recording import Waveform
-from . import tools
+from .toolkit import ToolContext, ToolSession
 
 
 @dataclass(frozen=True)
@@ -53,19 +53,28 @@ class ECGAgent:
         began = perf_counter()
         start, context_start = self.cursor_s, max(origin_s, self.cursor_s-self.config.lookback_s)
         trace, previews, observations = [], {}, {}
+        session = ToolSession(ToolContext(elapsed, origin_s, end),
+                              max_calls=max(8, 2*len(elapsed.channels)+self.config.measurement_budget))
         primary = next((c for c in ('MLII','II','I') if c in elapsed.channels), elapsed.channels[0])
         channels = [primary]+[c for c in elapsed.channels if c != primary]
 
         def qc(channel):
             if channel not in previews:
-                previews[channel] = tools.inspect(elapsed.window(channel, context_start-origin_s, end-origin_s), elapsed.fs)
+                response = session.call('assess_quality', {'lead':channel,'start_s':context_start,'end_s':end})
+                previews[channel] = response['result'] if response['status']=='ok' else {
+                    'score':0.,'reasons':[response['error']['code'] if response['error'] else 'insufficient_window'],
+                    'signal_quality':{},'duration_ms':response['duration_ms']}
                 trace.append({'action': 'QC', 'lead':channel, 'available_until_s':end,
                               'reasons':previews[channel]['reasons']})
             return previews[channel]
 
         def measure(channel):
             q = qc(channel)
-            item = tools.measure(elapsed.window(channel, context_start-origin_s, end-origin_s), elapsed.fs, context_start, start, end)
+            response = session.call('detect_beats', {'lead':channel,'start_s':context_start,
+                                                     'end_s':end,'commit_start_s':start})
+            item = response['result'] or {'r_peaks_s':[],'rate_bpm':None,'rr_cv':None,
+                'rr_intervals_s':[],'detector_status':'insufficient' if response['status']=='insufficient' else 'failed',
+                'detector_error':response['error'],'duration_ms':response['duration_ms']}
             observations[channel] = item | {'lead': channel, 'signal_usable':not q['reasons'],
                 'eligible':not q['reasons'] and item['rate_bpm'] is not None and len(item['r_peaks_s']) >= 4}
             trace.append({'action':'MEASURE','lead':channel,'window_s':[context_start,end],
@@ -99,6 +108,7 @@ class ECGAgent:
                  'r_peaks_s':selected['r_peaks_s'] if selected else [],
                  'status':'measured' if selected else 'review_required', 'reason':reason,
                  'observations':observations, 'previews':previews, 'trace':trace,
+                 'tool_calls':session.calls,
                  'cost':{'measurements':len(observations),'qc_calls':len(previews),
                          'tool_ms':sum(r['duration_ms'] for r in observations.values())+sum(r['duration_ms'] for r in previews.values()),
                          'analysis_ms':(perf_counter()-began)*1000}}
