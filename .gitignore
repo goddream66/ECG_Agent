@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.egg-info/
+data/
+models/*
+!models/ASSETS.md
+!models/SHA256SUMS.csv
+runs/
+.env
+
+tmp/
+*.zip
+*.log
+.env.*
+!.env.example
+*.pem
+*.key
