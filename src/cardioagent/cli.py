@@ -42,6 +42,16 @@ def arguments() -> argparse.Namespace:
     from .policy.state import TASKS
     from .policy.value import BASELINES as V23_BASELINES
 
+    sub = commands.add_parser("prepare-ecg-scroll", help="Import waveform-backed AF tasks, separating answers from inference")
+    sub.add_argument("--source", type=Path, default=Path("D:/ECGagent/ECG/data/tasks/ecgscroll_lh.jsonl"))
+    sub.add_argument("--raw-root", type=Path, default=Path("D:/ECGagent/ECG/data/raw"))
+    sub.add_argument("--dataset", choices=("afdb", "ltafdb"), default="afdb")
+    sub.add_argument("--max-records", type=int, default=6)
+    sub.add_argument("--duration-s", type=float, default=1800., help="Fixed prefix duration; 0 imports full records")
+    sub = commands.add_parser("score-ecg-intervals", help="Score final AF intervals without accessing a model")
+    sub.add_argument("--references", type=Path, required=True)
+    sub.add_argument("--predictions", type=Path, required=True)
+
     sub = commands.add_parser("list-ecg-tools", help="Export versioned tool catalog and JSON schemas")
     sub.add_argument("--experimental", action="store_true")
     sub = commands.add_parser("call-ecg-tool", help="Execute one registered ECG tool locally")
@@ -237,6 +247,17 @@ def main() -> None:
     stamp = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid4().hex[:8]}"
     output = args.output / stamp
     try:
+        if args.command == "prepare-ecg-scroll":
+            from .ecg_agent.benchmarks.tasks import prepare
+            prepare(args.source, args.raw_root, output, max_records=args.max_records,
+                    duration_s=args.duration_s, dataset=args.dataset)
+            print(f"ECG-Scroll task bundle: {output.resolve()}")
+            return
+        if args.command == "score-ecg-intervals":
+            from .ecg_agent.benchmarks.evaluate import score_files
+            score_files(args.references, args.predictions, output)
+            print(f"Interval scores: {output.resolve() / 'interval_scores.json'}")
+            return
         if args.command in ("list-ecg-tools", "call-ecg-tool"):
             from .ecg_agent.toolkit import build_registry, ToolContext, ToolSession
             registry = build_registry()

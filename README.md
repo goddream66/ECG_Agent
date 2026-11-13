@@ -119,3 +119,6 @@ ECG 工具工程化入口：
 - [第三方来源](THIRD_PARTY_NOTICES.md)
 
 默认只开放质量、心搏、RR 和粗扫描工具；P/QRS/ST/T/QT 代理测量需显式启用 experimental。
+
+
+最小事件任务接入：见 [ECG-Scroll 任务与区间评分](docs/ECG_SCROLL_MINIMAL.md)。新增 prepare-ecg-scroll 和 score-ecg-intervals，任务答案与推理清单分离。

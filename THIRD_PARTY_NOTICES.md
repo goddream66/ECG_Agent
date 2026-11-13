@@ -23,3 +23,5 @@ See third_party/ecg_scroll_source.json for the exact local source hash and commi
 
 CardioAgent uses its own provider-neutral contracts and runtime. It does not
 install either framework as part of this refactor or claim API compatibility.
+
+`src/cardioagent/ecg_agent/benchmarks/intervals.py` additionally adapts the temporal-F1 and relative-error verifiers from ECG-Scroll `ecg/verify.py`, under the retained MIT license.
