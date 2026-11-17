@@ -14,6 +14,8 @@ class JsonLogs:
                       for name in ('evidence', 'acquisitions', 'assessments', 'event_updates', 'window_trace')}
 
     def emit(self, name, row):
+        if name == 'llm_steps' and name not in self.files:
+            self.files[name] = (self.folder / f'{name}.jsonl').open('w', encoding='utf-8')
         write_line(self.files[name], row)
 
     def close(self):

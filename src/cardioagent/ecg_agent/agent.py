@@ -16,9 +16,13 @@ from cardioagent.ecg_agent.harness import ToolContext, ToolSession
 from cardioagent.ecg_agent.data.afdb import CHANNELS, SOURCE_FS, _arrivals
 
 def replay_event_record(cache, record, task, channel, config, score, logs, context,
-                        *, policy='event-adaptive', raw_root=None):
+                        *, policy='event-adaptive', raw_root=None, reviewer=None):
     """The scorer is invoked only inside a requested current-window model tool."""
     tracker = EventTracker(config)
+    if policy not in ('event-adaptive', 'legacy-dual', 'event-react'):
+        raise ValueError('Unknown event policy')
+    if policy == 'event-react' and reviewer is None:
+        raise ValueError('event-react requires an explicit LLM reviewer')
     if policy=='legacy-dual' and config.continue_threshold is not None:
         raise ValueError('Legacy dual policy does not implement a state-dependent score threshold')
     legacy = EventMemory() if policy == 'legacy-dual' else None
@@ -28,7 +32,7 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
     # I/O may load raw samples in advance; tools receive only an owned current-window snapshot.
     # No filtering, peak detection, scoring, or evidence extraction on future samples occurs.
     raw = None
-    if policy == 'event-adaptive':
+    if policy in ('event-adaptive', 'event-react'):
         raw = wfdb.rdrecord(str(Path(raw_root) / record['record_id']))
         if raw.fs != SOURCE_FS or tuple(raw.sig_name) != CHANNELS or raw.sig_len != record['source_record_samples']:
             raise ValueError('Raw data/cache coordinates disagree')
@@ -64,7 +68,9 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
                                   cached_model=model_window, evidence_context=context)
 
             def call(tool, lead):
-                if primary is None:
+                if policy == 'event-react' and primary is not None:
+                    trigger = 'llm_review_request'
+                elif primary is None:
                     trigger = 'scheduled_primary_score'
                 elif tool == 'assess_quality':
                     trigger = 'validate_primary_quality' if lead == channel else 'validate_secondary_quality'
@@ -95,6 +101,9 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
             if legacy is not None:
                 decision, checked, reason = decide(call, primary, secondary, config.threshold,
                                                    legacy, 'dual', config.review_budget)
+            elif policy == 'event-react':
+                decision, checked, reason = reviewer.review(call, primary, secondary, tracker, config,
+                                                            session, logs.emit)
             else:
                 decision, checked, reason = decide_event(call, primary, secondary, tracker, config)
             calls = session.calls
@@ -134,6 +143,8 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
         events, intervals = legacy.events, legacy.intervals
     else:
         events, intervals = tracker.finish(cursor), tracker.intervals
+    if policy == 'event-react':
+        totals.update(reviewer.counts)
     return {'task_id': task['task_id'], 'record_id': record['record_id'], 'intervals': intervals,
             'events': events, 'config': config.to_dict(), 'channel': channel, 'policy': policy,
             'elapsed_ms': (perf_counter() - began) * 1000, 'counts': dict(totals)}
@@ -142,9 +153,9 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
 class ECGEventAgent:
     def __init__(self, config=None):
         self.config = config or EventConfig()
-    def run_record(self, cache, record, task, channel, score, logs, context, *, policy='event-adaptive', raw_root=None):
+    def run_record(self, cache, record, task, channel, score, logs, context, *, policy='event-adaptive', raw_root=None, reviewer=None):
         return replay_event_record(cache, record, task, channel, self.config, score, logs, context,
-                                   policy=policy, raw_root=raw_root)
+                                   policy=policy, raw_root=raw_root, reviewer=reviewer)
 
 def __getattr__(name):
     if name in ('Config', 'ECGAgent'):

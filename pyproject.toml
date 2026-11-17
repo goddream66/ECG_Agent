@@ -21,6 +21,10 @@ dependencies = [
 ecg-tools = ["neurokit2==0.2.12"]
 models = ["torch>=2.6", "torchaudio>=2.6"]
 annotation = ["matplotlib>=3.8"]
+llm = ["transformers>=4.51,<5", "torch>=2.6"]
+
+[tool.setuptools.package-data]
+"cardioagent.ecg_agent" = ["prompts/*.txt"]
 
 [project.scripts]
 cardioagent = "cardioagent.cli:main"

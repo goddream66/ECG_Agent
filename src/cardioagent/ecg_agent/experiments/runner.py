@@ -65,7 +65,17 @@ def run_job(job):
             finally:
                 neural_ms += (perf_counter() - began) * 1000
         began = perf_counter()
+        reviewer = None
+        llm_load_ms = 0.
         try:
+            if job.get('llm') is not None:
+                from cardioagent.ecg_agent.llm.providers import build_chat_model
+                from cardioagent.ecg_agent.harness.react import ReActReview
+                load_began = perf_counter()
+                reviewer = ReActReview(build_chat_model(job['llm']),
+                    max_rounds=job['llm'].get('max_rounds', 5),
+                    history_windows=job['llm'].get('history_windows', 6))
+                llm_load_ms = (perf_counter() - load_began) * 1000
             if job['mode'] == 'fixed':
                 with Path(job['source_trace']).open(encoding='utf-8') as stream:
                     rows = (json.loads(line) for line in stream if line.strip())
@@ -79,10 +89,11 @@ def run_job(job):
                     score = live
                 result = replay_event_record(job['cache'], job['record'], job['task'], job['channel'],
                                              config, score, logs, context, policy=job['policy'],
-                                             raw_root=job['raw_root'])
+                                             raw_root=job['raw_root'], reviewer=reviewer)
         finally:
             logs.close()
         result['execution'] = {'mode': job['mode'], 'actual_model_calls': actual_calls,
+                               'llm_adapter_load_ms': llm_load_ms,
                                'device': job.get('device', 'cpu' if job['mode'] == 'live' else 'none'),
                                'model_info': _MODEL_INFO if job['mode'] == 'live' else None,
                                'neural_timing': 'wall clock including input transfer, forward and blocking scalar return',
@@ -161,6 +172,15 @@ def run(args):
     manifest = json.loads((args.cache / 'manifest.json').read_text(encoding='utf-8'))
     config = EventConfig(**json.loads(args.config.read_text(encoding='utf-8')))
     selected_variants=configured_variants(args.mode,config,getattr(args,'policies',None))
+    llm_config = None
+    if any(policy == 'event-react' for _, _, policy in selected_variants):
+        if not getattr(args, 'llm_config', None):
+            raise ValueError('event-react requires --llm-config')
+        if workers != 1:
+            raise ValueError('Use --workers 1 for the first ReAct experiment')
+        llm_config = json.loads(args.llm_config.read_text(encoding='utf-8'))
+        if any(k in llm_config for k in ('api_key', 'token', 'password')):
+            raise ValueError('Use api_key_env, never credentials in a configuration file')
     if args.mode == 'fixed' and config.threshold != .5:
         raise ValueError('Frozen legacy evidence interpretation requires threshold 0.5')
     tasks = read_jsonl(args.tasks, 'task_id')
@@ -192,6 +212,13 @@ def run(args):
                                      for p in (args.cache / f'{name}.npy', args.cache / f'{name}.windows.jsonl')},
                   'selection': list(tasks), 'duration_s': args.duration_s,
                   'variants': [(name, cfg.to_dict(), policy) for name, cfg, policy in selected_variants]}
+    if llm_config is not None:
+        from cardioagent.ecg_agent.harness.react import PROMPT
+        provenance['llm'] = dict(config=llm_config, prompt_sha256=digest(PROMPT))
+        if llm_config.get('provider') == 'transformers':
+            model_root = Path(llm_config['model_path'])
+            provenance['llm']['model_files'] = {p.name: digest(p) for p in sorted(model_root.iterdir())
+                if p.is_file() and (p.suffix in ('.json', '.safetensors') or p.name == 'merges.txt')}
     if args.mode == 'cached':
         saved = json.loads((args.scores / 'provenance.json').read_text(encoding='utf-8'))
         if saved['cache_manifest_sha256'] != provenance['cache_sha256'] or saved['checkpoint_sha256'] != provenance['checkpoint_sha256']:
@@ -228,6 +255,8 @@ def run(args):
                        'threads': args.threads, 'scores': str(args.scores),
                        'source_trace': str(args.output / f'frozen_traces/{channel}/{record["record_id"]}.jsonl')}
                 jobs.append(job)
+                if policy == 'event-react':
+                    job['llm'] = llm_config
     began = perf_counter()
     completed = 0
     for job, result, resumed in execute_jobs(jobs, args.mode, str(args.models), args.threads,
@@ -275,6 +304,7 @@ def main():
                         help='cpu or one CUDA device (e.g. cuda:0); CUDA uses one process/model')
     parser.add_argument('--threads', type=int, default=2)
     parser.add_argument('--policies',nargs='+',help='Explicit variant names; defaults to the existing mode matrix')
+    parser.add_argument('--llm-config', type=Path, help='Explicit ReAct provider and loop configuration')
     parser.add_argument('--channels', choices=('ECG1', 'ECG2'), nargs='+', default=['ECG1', 'ECG2'])
     parser.add_argument('--limit-records', type=int, default=0)
     parser.add_argument('--duration-s', type=float, default=0)
@@ -292,6 +322,8 @@ execution_settings = _execution.execution_settings
 
 def configured_variants(mode, config, selected=None):
     available=variants(mode,config)
+    if selected and 'event-react' in selected and mode != 'fixed':
+        available.append(('event-react', config, 'event-react'))
     if selected:
         unknown=set(selected)-{name for name,_,_ in available}
         if unknown:raise ValueError(f'Unknown variant names: {sorted(unknown)}')
@@ -311,7 +343,7 @@ def execute_jobs(jobs, mode, models, threads, device, workers):
 def inference_hashes(root):
     paths=list((root/'src/cardioagent/common').glob('*.py'))
     base=root/'src/cardioagent/ecg_agent'
-    for p in base.rglob('*.py'):
+    for p in list(base.rglob('*.py')) + list(base.glob('prompts/*.txt')):
         if not any(x in ('benchmarks','toolkit','evaluation','__pycache__') for x in p.relative_to(base).parts): paths.append(p)
     paths+=list((root/'src/cardioagent/signal').glob('*.py'))
     paths += [root/'third_party/ecgfounder/net1d.py',root/'third_party/ecgfounder/tasks.txt']

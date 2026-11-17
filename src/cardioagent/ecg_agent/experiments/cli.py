@@ -16,6 +16,8 @@ def main():
     sub.add_argument('--mode',choices=('live','cached','fixed'),required=True)
     for name in ('cache','tasks','scores','baseline'): sub.add_argument('--'+name,type=Path,default=defaults[name])
     sub.add_argument('--config',type=Path,default=code_root()/'configs/ecg/policy.json')
+    sub.add_argument('--policies', nargs='+')
+    sub.add_argument('--llm-config', type=Path)
     sub.add_argument('--run-dir',type=Path,required=True)
     sub.add_argument('--workers',type=int,default=4)
     sub.add_argument('--threads',type=int,default=2)

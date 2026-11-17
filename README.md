@@ -49,5 +49,9 @@ python -m cardioagent.cli track-afdb --help
 ```
 
 Do not resume pre-refactor checkpoints as new runs: source fingerprints intentionally
-change. Historical predictions/manifests remain immutable. No LLM or learned
-stopping policy is implemented by this reorganization.
+change. Historical predictions/manifests remain immutable.
+
+An opt-in Qwen ReAct review planner is now available through `--policies event-react`
+and `--llm-config`; see [setup, prompts and validation](docs/REACT_QWEN_V1.md).
+It chooses evidence-acquisition tools; event interpretation/lifecycle still use
+the existing rules. Real Qwen GPU inference remains to be verified separately.
