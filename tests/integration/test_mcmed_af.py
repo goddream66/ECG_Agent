@@ -13,6 +13,9 @@ class AFOnlyLabels(unittest.TestCase):
     def test_binary_target(self):
         self.assertTrue(classify(.1,.81,.8))
         self.assertFalse(classify(.8,.1,.8))
+        self.assertTrue(classify(.5,.1,.5,'ge'))
+        self.assertFalse(classify(.499,.1,.5,'ge'))
+        self.assertTrue(classify(.1,.7,.5,'ge'))
         with self.assertRaises(ValueError):classify(float('nan'),.1,.8)
 
     def test_interval_unknown_and_negative_gaps(self):
@@ -44,6 +47,15 @@ class AFOnlyLabels(unittest.TestCase):
             self.assertEqual(json.loads((args.output/'manifest.json').read_text())['status'],'complete')
             self.assertEqual(len((args.output/'intervals.jsonl').read_text().splitlines()),1)
             self.assertTrue(all('ranked_candidates' not in row for row in rows))
+            args.output=base/'binary_output';args.threshold=.5;args.comparison='ge';args.binary=True;args.cpu_threads=1
+            calls.clear()
+            run(args,factory=factory)
+            rows=[json.loads(x) for x in (args.output/'windows.jsonl').read_text().splitlines()]
+            self.assertEqual([x['binary_label'] for x in rows],[1,0,None])
+            self.assertEqual([x['label'] for x in rows],['AF/AFL','no_AF/AFL','unknown'])
+            manifest=json.loads((args.output/'manifest.json').read_text())
+            self.assertEqual(manifest['rule'],'max(AF,AFL) >= threshold')
+            self.assertEqual(manifest['cpu_threads'],1)
 
 
 if __name__=='__main__':unittest.main()

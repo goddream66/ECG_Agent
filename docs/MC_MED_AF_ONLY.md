@@ -11,3 +11,9 @@
 `windows.jsonl` 给出逐窗 AF、AFL 分数与候选标签、片段相对秒数和脱敏绝对时间；`intervals.jsonl` 合并同片段中相邻阳性窗口，不跨阴性、未知、片段或就诊合并，边界精度为十秒。`target_scores.jsonl` 只保留 AF/AFL 两个分数供审计，没有其他类别。`records.json` 保存来源指纹；`manifest.json` 保存模型、预处理、Git 提交号与状态；`summary.json`、`patient_summary.csv` 和 `progress.json` 给出统计和进度。
 
 输出必须使用新的 data 盘目录，不覆盖历史包；失败运行不能当完整标签使用。本入口是离线数据预标注，不是 Agent 流式评估，不将这些预测作为独立真值。
+
+## 0.5 二值模式与双 GPU 运行
+
+使用 `--threshold 0.5 --comparison ge --binary` 显式选择 `max(AF,AFL) >= 0.5`：输出 `AF/AFL` 和 `binary_label=1`，否则输出 `no_AF/AFL` 和 `binary_label=0`。不可用窗口仍是 `unknown` 和空值，不算阴性。这里的阴性是模型规则判断，不是人工确认。
+
+并行运行时，每个进程通过 `CUDA_VISIBLE_DEVICES` 仅绑定一张物理卡，内部设备为 `cuda:0`。四个工作进程各分配一名患者、每卡两个进程，每进程指定 `--cpu-threads 1` 并设置 `OMP_NUM_THREADS=1`、`MKL_NUM_THREADS=1`、`OPENBLAS_NUM_THREADS=1`，控制主要 CPU 计算线程总预算为四；实际进程还可能有 CUDA 或系统辅助线程。不同进程写独立输出目录，全部成功且核对输入覆盖、分数与区间后才汇总结果。0.8 模式的默认行为保持不变。

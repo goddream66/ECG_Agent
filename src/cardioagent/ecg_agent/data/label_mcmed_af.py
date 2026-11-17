@@ -31,10 +31,11 @@ def timestamp(origin, seconds):
     return (datetime.fromisoformat(origin)+timedelta(seconds=seconds)).isoformat() if origin else None
 
 
-def classify(af, afl, threshold):
+def classify(af, afl, threshold, comparison='gt'):
     if not np.isfinite([af, afl]).all() or not 0 <= min(af, afl) <= max(af, afl) <= 1:
         raise ValueError('Invalid AF/AFL scores')
-    return bool(max(af, afl) > threshold)
+    if comparison not in ('gt', 'ge'):raise ValueError('Comparison must be gt or ge')
+    return bool(max(af, afl) >= threshold if comparison=='ge' else max(af, afl) > threshold)
 
 
 def intervals(rows):
@@ -83,6 +84,10 @@ def select(root, patient_ids):
 
 def run(args, factory=create_ecgfounder_scorer):
     if not 0 < args.threshold < 1:raise ValueError('Threshold must be in (0,1)')
+    comparison=getattr(args,'comparison','gt');binary=getattr(args,'binary',False)
+    cpu_threads=getattr(args,'cpu_threads',4)
+    if comparison not in ('gt','ge') or cpu_threads<1:raise ValueError('Invalid comparison or CPU threads')
+    positive_label,negative_label=('AF/AFL','no_AF/AFL') if binary else ('AF/AFL_candidate','below_threshold')
     root=args.source_root.resolve();output=args.output.resolve()
     if output.is_relative_to(root):raise ValueError('Output must be outside source data')
     output.mkdir(parents=True,exist_ok=False)
@@ -91,7 +96,8 @@ def run(args, factory=create_ecgfounder_scorer):
     dump(output/'records.json',records);dump(output/'visit_inventory.json',visits);dump(output/'source_issues.json',issues)
     git=lambda *a:subprocess.check_output(['git','-C',str(code_root()),*a],text=True).strip()
     manifest={'status':'running','patients':args.patients,'scope':'all available II segments across all visits',
-              'window_s':10,'threshold':args.threshold,'rule':'max(AF,AFL) > threshold',
+              'window_s':10,'threshold':args.threshold,'rule':f"max(AF,AFL) {'>=' if comparison=='ge' else '>'} threshold",
+              'binary':binary,'cpu_threads':cpu_threads,'positive_label':positive_label,'negative_label':negative_label,
               'preprocessing':load_profile(),'created_utc':datetime.now(timezone.utc).isoformat(),
               'git_commit':git('rev-parse','HEAD'),'git_dirty':bool(git('status','--porcelain')),
               'entry_sha256':sha(Path(__file__)),'visits_sha256':sha(root/'visits.csv'),
@@ -100,6 +106,8 @@ def run(args, factory=create_ecgfounder_scorer):
               'not_a_streaming_agent_evaluation':True}
     dump(output/'manifest.json',manifest)
     load_start=perf_counter();predict,info=factory(args.models,args.device)
+    import torch
+    torch.set_num_threads(cpu_threads)
     manifest.update(model=info,checkpoint_sha256=sha(info['checkpoint']),model_load_s=perf_counter()-load_start)
     dump(output/'manifest.json',manifest)
     counts=Counter();patients={};model_s=0.
@@ -112,6 +120,7 @@ def run(args, factory=create_ecgfounder_scorer):
                     row={k:r[k] for k in ('patient_id','visit_id','segment_id')}
                     row.update(window_index=i,start_s=start,end_s=end,start_datetime=timestamp(r['origin'],start),
                                end_datetime=timestamp(r['origin'],end),af_afl_candidate=None,label='unknown',reason=None,human_verified=False,af_score=None,afl_score=None)
+                    if binary:row['binary_label']=None
                     evidence={'window_index':i,'af_score':None,'afl_score':None}
                     try:
                         if b-a!=step:raise ValueError('incomplete_tail')
@@ -124,8 +133,9 @@ def run(args, factory=create_ecgfounder_scorer):
                         row['reason']=str(exc)
                     else:
                         t=perf_counter();af,afl=predict(prepared);model_s+=perf_counter()-t
-                        row['af_afl_candidate']=classify(af,afl,args.threshold)
-                        row['label']='AF/AFL_candidate' if row['af_afl_candidate'] else 'below_threshold'
+                        row['af_afl_candidate']=classify(af,afl,args.threshold,comparison)
+                        row['label']=positive_label if row['af_afl_candidate'] else negative_label
+                        if binary:row['binary_label']=int(row['af_afl_candidate'])
                         row.update(af_score=af,afl_score=afl);evidence.update(af_score=af,afl_score=afl);counts['model_calls']+=1
                     rows.append(row);counts[row['label']]+=1
                     windows_out.write(json.dumps(row,allow_nan=False)+'\n')
@@ -136,14 +146,14 @@ def run(args, factory=create_ecgfounder_scorer):
                 for event in events:events_out.write(json.dumps(event,allow_nan=False)+'\n')
                 windows_out.flush();events_out.flush()
                 p=patients.setdefault(r['patient_id'],Counter())
-                p.update({label:sum(x['label']==label for x in rows) for label in ('AF/AFL_candidate','below_threshold','unknown')})
+                p.update({label:sum(x['label']==label for x in rows) for label in (positive_label,negative_label,'unknown')})
                 p.update(segments=1,intervals=len(events),positive_seconds=sum(x['duration_s'] for x in events),recorded_seconds=r['samples']/fs)
                 dump(output/'progress.json',{'completed_segments':number,'total_segments':len(records),'counts':dict(counts),'patients':patients})
                 print(json.dumps({'segment':number,'total':len(records),'patient':r['patient_id'],'windows':len(rows),'intervals':len(events)}),flush=True)
         manifest.update(status='complete',total_s=perf_counter()-started,model_execution_s=model_s)
         dump(output/'summary.json',{'counts':dict(counts),'patients':patients,'segments':len(records),'source_issues':len(issues)})
         with (output/'patient_summary.csv').open('w',newline='') as stream:
-            writer=csv.DictWriter(stream,fieldnames=['patient_id','AF/AFL_candidate','below_threshold','unknown','segments','intervals','positive_seconds','recorded_seconds']);writer.writeheader()
+            writer=csv.DictWriter(stream,fieldnames=['patient_id',positive_label,negative_label,'unknown','segments','intervals','positive_seconds','recorded_seconds']);writer.writeheader()
             for patient,stats in patients.items():writer.writerow({'patient_id':patient,**stats})
     except Exception as exc:
         manifest.update(status='failed',error=f'{type(exc).__name__}: {exc}');raise
@@ -158,6 +168,9 @@ def main():
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--device',default='cuda:0')
     parser.add_argument('--threshold',type=float,default=0.8)
+    parser.add_argument('--comparison',choices=['gt','ge'],default='gt')
+    parser.add_argument('--binary',action='store_true',help='Export 1/0 labels; invalid windows remain null')
+    parser.add_argument('--cpu-threads',type=int,default=4,help='CPU threads per worker, applied after model loading')
     run(parser.parse_args())
 
 
