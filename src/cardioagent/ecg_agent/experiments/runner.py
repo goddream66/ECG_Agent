@@ -160,6 +160,7 @@ def run(args):
     root = code_root()
     manifest = json.loads((args.cache / 'manifest.json').read_text(encoding='utf-8'))
     config = EventConfig(**json.loads(args.config.read_text(encoding='utf-8')))
+    selected_variants=configured_variants(args.mode,config,getattr(args,'policies',None))
     if args.mode == 'fixed' and config.threshold != .5:
         raise ValueError('Frozen legacy evidence interpretation requires threshold 0.5')
     tasks = read_jsonl(args.tasks, 'task_id')
@@ -190,7 +191,7 @@ def run(args):
                   'waveform_files': {p.name: digest(p) for name in sorted({t['record_id'] for t in tasks.values()})
                                      for p in (args.cache / f'{name}.npy', args.cache / f'{name}.windows.jsonl')},
                   'selection': list(tasks), 'duration_s': args.duration_s,
-                  'variants': [(name, cfg.to_dict(), policy) for name, cfg, policy in variants(args.mode, config)]}
+                  'variants': [(name, cfg.to_dict(), policy) for name, cfg, policy in selected_variants]}
     if args.mode == 'cached':
         saved = json.loads((args.scores / 'provenance.json').read_text(encoding='utf-8'))
         if saved['cache_manifest_sha256'] != provenance['cache_sha256'] or saved['checkpoint_sha256'] != provenance['checkpoint_sha256']:
@@ -216,7 +217,7 @@ def run(args):
     manifest_id = canonical_hash(provenance)
     jobs = []
     for channel in args.channels:
-        for name, variant_config, policy in variants(args.mode, config):
+        for name, variant_config, policy in selected_variants:
             for task in tasks.values():
                 record = records[task['record_id']]
                 job = {'target': str(args.output / f'{channel.lower()}-{name}/records/{record["record_id"]}'),
@@ -239,7 +240,7 @@ def run(args):
                           'device': result['execution']['device'],
                           'wall_s': round(result['execution']['record_wall_ms'] / 1000, 2)}, ensure_ascii=False), flush=True)
     for channel in args.channels:
-        for name, variant_config, _ in variants(args.mode, config):
+        for name, variant_config, _ in selected_variants:
             folder = args.output / f'{channel.lower()}-{name}'
             results = [json.loads((folder / f'records/{task["record_id"]}/result.json').read_text(encoding='utf-8'))
                        for task in tasks.values()]
@@ -273,6 +274,7 @@ def main():
                         default=os.environ.get('CARDIOAGENT_ECG_DEVICE', 'cpu'),
                         help='cpu or one CUDA device (e.g. cuda:0); CUDA uses one process/model')
     parser.add_argument('--threads', type=int, default=2)
+    parser.add_argument('--policies',nargs='+',help='Explicit variant names; defaults to the existing mode matrix')
     parser.add_argument('--channels', choices=('ECG1', 'ECG2'), nargs='+', default=['ECG1', 'ECG2'])
     parser.add_argument('--limit-records', type=int, default=0)
     parser.add_argument('--duration-s', type=float, default=0)
@@ -287,6 +289,16 @@ def main():
 from cardioagent.common.paths import code_root, default_inputs
 from cardioagent.ecg_agent.harness import execution as _execution
 execution_settings = _execution.execution_settings
+
+def configured_variants(mode, config, selected=None):
+    available=variants(mode,config)
+    if selected:
+        unknown=set(selected)-{name for name,_,_ in available}
+        if unknown:raise ValueError(f'Unknown variant names: {sorted(unknown)}')
+        available=[item for item in available if item[0] in selected]
+    if config.continue_threshold is not None and any(policy in ('legacy-dual','fixed') for _,_,policy in available):
+        raise ValueError('State-dependent thresholds require event-adaptive variants; select --policies event-adaptive')
+    return available
 
 def initialize(mode, models, threads, device='cpu'):
     global _MODEL, _MODEL_INFO, _LOAD_MS

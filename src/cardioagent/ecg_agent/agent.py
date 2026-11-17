@@ -19,6 +19,8 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
                         *, policy='event-adaptive', raw_root=None):
     """The scorer is invoked only inside a requested current-window model tool."""
     tracker = EventTracker(config)
+    if policy=='legacy-dual' and config.continue_threshold is not None:
+        raise ValueError('Legacy dual policy does not implement a state-dependent score threshold')
     legacy = EventMemory() if policy == 'legacy-dual' else None
     ledger = EvidenceLedger(context)
     totals = Counter()
@@ -38,6 +40,7 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
         primary = None
         evidence_ids = []
         calls = []
+        decision_threshold = config.threshold_for(tracker)
         if row['status'] == 'incomplete':
             decision, checked, reason = 'unavailable', False, 'incomplete_window'
         else:
@@ -70,9 +73,9 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
                 elif any(x['tool'] == 'assess_quality' and x['lead'] == channel and
                          (x['status'] != 'ok' or x['result'].get('reasons')) for x in session.calls):
                     trigger = 'primary_quality_insufficient'
-                elif max(primary['result']['af_score'], primary['result']['afl_score']) < config.threshold and tracker.active:
+                elif max(primary['result']['af_score'], primary['result']['afl_score']) < decision_threshold and tracker.active:
                     trigger = 'active_event_negative'
-                elif abs(max(primary['result']['af_score'], primary['result']['afl_score']) - config.threshold) < config.borderline_margin:
+                elif abs(max(primary['result']['af_score'], primary['result']['afl_score']) - decision_threshold) < config.borderline_margin:
                     trigger = 'borderline_score'
                 elif tracker.state in ('CANDIDATE', 'PENDING_END', 'UNKNOWN_HOLD'):
                     trigger = 'resolve_' + tracker.state.lower()
@@ -108,7 +111,7 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
             if primary['status'] == 'ok':
                 totals['scored_seconds'] += cursor - start
         assessment = ledger.assessment(decision, reason, evidence_ids, cursor, checked=checked)
-        logs.emit('assessments', dict(assessment, task_id=task['task_id']))
+        logs.emit('assessments', dict(assessment, task_id=task['task_id'], decision_threshold=decision_threshold))
         if legacy is not None:
             observation = legacy.observe(start, cursor, decision, checked, evidence_ids)
             state = (observation or {}).get('state', 'idle')
@@ -119,6 +122,7 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
             logs.emit('event_updates', dict(deepcopy(observation), task_id=task['task_id']))
         logs.emit('window_trace', {'task_id': task['task_id'], 'start_s': start, 'end_s': cursor,
                                   'cursor_s': cursor, 'decision': decision, 'reason': reason, 'state': state,
+                                  'decision_threshold': decision_threshold,
                                   'af_score': primary['result'].get('af_score') if primary else None,
                                   'afl_score': primary['result'].get('afl_score') if primary else None,
                                   'evidence_ids': evidence_ids, 'tool_calls': len(calls)})

@@ -11,10 +11,14 @@ class EventConfig:
     borderline_margin: float = .1
     recheck_windows: int = 3
     review_budget: int = 4
+    continue_threshold: float | None = None
 
     def __post_init__(self):
         if not 0 < self.threshold < 1 or not math.isfinite(self.threshold):
             raise ValueError('Invalid threshold')
+        if self.continue_threshold is not None and (
+                not math.isfinite(self.continue_threshold) or not 0 < self.continue_threshold <= self.threshold):
+            raise ValueError('Continue threshold must be finite, positive and no greater than start threshold')
         if any(type(x) is not int or x < 1 for x in (self.enter_windows, self.exit_windows, self.recheck_windows)):
             raise ValueError('Window counts must be positive integers')
         if not math.isfinite(self.unknown_grace_s) or self.unknown_grace_s < 0:
@@ -23,7 +27,14 @@ class EventConfig:
             raise ValueError('Invalid review configuration')
 
     def to_dict(self):
-        return asdict(self)
+        result=asdict(self)
+        if self.continue_threshold is None:result.pop('continue_threshold')
+        return result
+
+    def threshold_for(self, tracker):
+        active=tracker.active
+        confirmed=active is not None and active.get('confirmed_at_s') is not None
+        return self.continue_threshold if confirmed and self.continue_threshold is not None else self.threshold
 
 
 @dataclass(frozen=True)
