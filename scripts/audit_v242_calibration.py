@@ -1,11 +1,11 @@
 from pathlib import Path
 import torch
-from cardioagent.policy.audit_v24 import _trials
-from cardioagent.policy.conditional_value import ConditionalNetwork, Variant
-from cardioagent.policy.selection import run
-from cardioagent.policy.replay import read_replay
-from cardioagent.policy.domain_diagnostics import audit
-from cardioagent.dataset import save_json
+from cardioagent.legacy.multimodal.policy.audit_v24 import _trials
+from cardioagent.legacy.multimodal.policy.conditional_value import ConditionalNetwork, Variant
+from cardioagent.legacy.multimodal.policy.selection import run
+from cardioagent.legacy.multimodal.policy.replay import read_replay
+from cardioagent.legacy.multimodal.policy.domain_diagnostics import audit
+from cardioagent.common.io import save_json
 
 torch.set_num_threads(2)
 d=torch.load('runs/20261112-182420-ec2a1dfa/models.pt',map_location='cpu',weights_only=True)

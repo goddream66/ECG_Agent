@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "source_root": "/data/1shared/xiaoyujie/mc-med",
+  "output_root": "/data/1shared/gaojiajun/ECGagent/datasets/mcmed-ecg-agent",
+  "models": "/data/1shared/gaojiajun/ECGagent/models",
+  "split": "train",
+  "patients": 10,
+  "duration_s": 600,
+  "max_patient_scan": 1000,
+  "seed": 20261116,
+  "device": "cuda:0",
+  "save_scores": true,
+  "quality_policy": "hard-invalid-skip-correlation-review-v2"
+}

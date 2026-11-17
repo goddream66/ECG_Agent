@@ -1,3 +1,4 @@
+from cardioagent.common.paths import code_root
 import json
 import unittest
 from unittest.mock import patch
@@ -21,16 +22,33 @@ def measured(values,fs,start,commit_start,end):
 
 
 class ToolRuntimeTests(unittest.TestCase):
+    def test_cached_model_tool_only_accesses_elapsed_retained_windows(self):
+        calls = []
+
+        def cached_model(lead, start, end):
+            calls.append((lead, start, end))
+            return np.ones(5000, dtype=np.float32), lambda _: (0.8, 0.1)
+
+        wave = context().waveform
+        session = ToolSession(ToolContext(wave, 10., 20.), cached_model=cached_model)
+        for a, b in [(0., 10.), (11., 21.)]:
+            result = session.call('score_ecgfounder', {'lead': 'II', 'start_s': a, 'end_s': b})
+            self.assertEqual(result['error']['code'], 'unavailable_window')
+        self.assertEqual(calls, [])
+        result = session.call('score_ecgfounder', {'lead': 'II', 'start_s': 10., 'end_s': 20.})
+        self.assertEqual(result['result'], {'af_score': 0.8, 'afl_score': 0.1})
+        self.assertEqual(calls, [('II', 10., 20.)])
+
     def test_default_allowlist_excludes_diagnostic_and_proxy_tools(self):
         registry=build_registry();names={t['name'] for t in registry.schemas()}
         self.assertEqual(names,{'assess_quality','detect_beats','get_rate_rhythm','get_feature_profile'})
-        self.assertEqual(len(registry.schemas(True)),9)
+        self.assertEqual(len(registry.schemas(True)),12)
         self.assertNotIn('classify_rhythm',{t['name'] for t in registry.schemas(True)})
         json.dumps(registry.function_schemas(True),allow_nan=False)
 
     def test_validation_precedes_execution(self):
         session=ToolSession(context())
-        with patch('cardioagent.ecg_agent.tools.measure') as detector:
+        with patch('cardioagent.ecg_agent.tools.algorithms.measure') as detector:
             cases=[('detect_beats',{'lead':'II','start_s':0.,'end_s':31.},'unavailable_window'),
                    ('detect_beats',{'lead':'II','start_s':0.,'end_s':30.,'label':'AF'},'invalid_arguments'),
                    ('detect_beats',{'lead':'PPG','start_s':0.,'end_s':30.},'unknown_lead'),
@@ -47,7 +65,7 @@ class ToolRuntimeTests(unittest.TestCase):
 
     def test_cache_is_isolated_from_caller_mutation(self):
         session=ToolSession(context());args={'lead':'II','start_s':0.,'end_s':30.}
-        with patch('cardioagent.ecg_agent.tools.measure',measured):
+        with patch('cardioagent.ecg_agent.tools.algorithms.measure',measured):
             a=session.call('get_rate_rhythm',args)
             a['result']['rr_intervals_ms'][0]=9.
             b=session.call('get_rate_rhythm',args)
@@ -59,7 +77,7 @@ class ToolRuntimeTests(unittest.TestCase):
         received=[]
         def detector(values,*args):received.append(values.copy());return measured(values,*args)
         args={'lead':'II','start_s':0.,'end_s':30.}
-        with patch('cardioagent.ecg_agent.tools.measure',detector):
+        with patch('cardioagent.ecg_agent.tools.algorithms.measure',detector):
             a=ToolSession(context()).call('get_rate_rhythm',args)
             b=ToolSession(context(suffix=1000.)).call('get_rate_rhythm',args)
         np.testing.assert_array_equal(received[0],received[1]);self.assertEqual(len(received[0]),3000)
@@ -71,7 +89,7 @@ class ToolRuntimeTests(unittest.TestCase):
 
     def test_proxy_units_and_semantics(self):
         args={'lead':'II','start_s':0.,'end_s':30.}
-        with patch('cardioagent.ecg_agent.tools.measure',measured):
+        with patch('cardioagent.ecg_agent.tools.algorithms.measure',measured):
             unknown=ToolSession(context('NU'),allow_experimental=True).call('get_st_proxy',args)
             session=ToolSession(context(),allow_experimental=True)
             for spec in build_registry().schemas(True):
@@ -94,14 +112,14 @@ class ToolRuntimeTests(unittest.TestCase):
 
     def test_catalog_is_generated_from_registry(self):
         from pathlib import Path
-        saved=json.loads((Path(__file__).resolve().parents[1]/'configs/ecg_tools_v1.json').read_text())
-        self.assertEqual(saved['tools'],build_registry().schemas(True))
+        saved=json.loads((code_root()/'configs/ecg/tools.schema.json').read_text())
+        self.assertEqual(saved['tools'],build_registry(include_cached_model=True).schemas(True))
 
     def test_execution_errors_are_structured_and_not_replayed_as_success(self):
         args={'lead':'II','start_s':0.,'end_s':30.}
         failed={'rate_bpm':None,'r_peaks_s':[],'detector_error':'detector unavailable'}
         session=ToolSession(context())
-        with patch('cardioagent.ecg_agent.tools.measure',return_value=failed) as detector:
+        with patch('cardioagent.ecg_agent.tools.algorithms.measure',return_value=failed) as detector:
             a=session.call('detect_beats',args)
             b=session.call('detect_beats',args)
         self.assertEqual(a['error']['code'],'tool_failed')

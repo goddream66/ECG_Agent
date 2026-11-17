@@ -1,0 +1,15 @@
+{
+  "profile": "ecgfounder-filter-zscore-window-v1",
+  "window_seconds": 10,
+  "target_fs": 500,
+  "notch_hz": 50,
+  "notch_q": 30,
+  "bandpass_hz": [0.67, 40],
+  "filter_order": 4,
+  "baseline_window_seconds": 0.4,
+  "zscore_epsilon": 1e-8,
+  "clipping": null,
+  "processing_scope": "one completed window",
+  "source": "PKUDigitalHealth/ECGFounder util.py filter_bandpass and dataset.py z_score_normalization",
+  "non_native_rate_policy": "polyphase resample to 500 Hz before filtering"
+}

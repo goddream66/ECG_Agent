@@ -1,9 +1,6 @@
-"""Regenerate the checked-in catalog without loading data or models."""
-import json
-from pathlib import Path
-from cardioagent.ecg_agent.toolkit import build_registry
-
-if __name__=='__main__':
-    destination=Path(__file__).resolve().parents[1]/'configs/ecg_tools_v1.json'
-    destination.write_text(json.dumps({'schema_version':1,'tools':build_registry().schemas(True)},indent=2)+'\n',encoding='utf-8')
-    print(destination)
+"""Compatible entry; implementation: cardioagent.ecg_agent.tools.export."""
+from cardioagent.ecg_agent.tools.export import main
+def __getattr__(name):
+    from importlib import import_module
+    return getattr(import_module('cardioagent.ecg_agent.tools.export'),name)
+if __name__=="__main__":main()

@@ -1,0 +1,9 @@
+{
+  "threshold": 0.5,
+  "enter_windows": 2,
+  "exit_windows": 2,
+  "unknown_grace_s": 10.0,
+  "borderline_margin": 0.1,
+  "recheck_windows": 3,
+  "review_budget": 4
+}

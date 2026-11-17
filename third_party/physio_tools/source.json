@@ -1,0 +1,28 @@
+{
+  "sources": {
+    "third_party/physio_tools/FeatureDB/tools/QRSDetector.py": {
+      "url": "https://raw.githubusercontent.com/PKUDigitalHealth/FeatureDB/6b95c50cd759e7430c808b8dba54852178afb937/tools/QRSDetector.py",
+      "commit": "6b95c50cd759e7430c808b8dba54852178afb937",
+      "sha256": "a113e5bbcbee7b75581cdd96fe956c703081694c7f11e8fe64ff7689aa0d4930"
+    },
+    "third_party/physio_tools/FeatureDB/features/ECGAvgBeat.py": {
+      "url": "https://raw.githubusercontent.com/PKUDigitalHealth/FeatureDB/6b95c50cd759e7430c808b8dba54852178afb937/features/ECGAvgBeat.py",
+      "commit": "6b95c50cd759e7430c808b8dba54852178afb937",
+      "sha256": "e240f6fb457f1d838bdcf3baa448d14f9b8c92974a32b19c79e7979c82fdb9d7"
+    },
+    "third_party/physio_tools/ecg_signal_quality/signalQI.py": {
+      "url": "https://raw.githubusercontent.com/PKUDigitalHealth/ecg_signal_quality/80e97da22a40652fb3e2dcad4c281a710f17cbb9/signalQI.py",
+      "commit": "80e97da22a40652fb3e2dcad4c281a710f17cbb9",
+      "sha256": "15920558d8183981d6fa693fd570044fa6f4f80c5cd42dbd6d2b683f61d2b04a"
+    }
+  },
+  "executed_upstream_files": false,
+  "license_status": "No explicit license file was found in either inspected snapshot; no MIT license is inferred.",
+  "adaptations": [
+    "Local detector only; lazy NeuroKit import; sample-time resampling and rounded checked coordinates",
+    "Reject missing/flat/unknown-unit signal; preserve raw RR without cleaning",
+    "Complete-beat averaging without zero padding; template segments checked individually",
+    "Separate prescreen rhythm flags from template correlation; null for insufficient evidence",
+    "No PQRST delineation, QT fields, long-duration HRV or HTTP calls enabled"
+  ]
+}

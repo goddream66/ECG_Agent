@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Copy to ops/server/activate.sh on the server; do not copy the Windows .venv.
+export ECG_AGENT_CODE="${ECG_AGENT_CODE:-$HOME/ECGagent}"
+export ECG_AGENT_STORAGE="${ECG_AGENT_STORAGE:-/data/1shared/$USER/ECGagent}"
+export CARDIOAGENT_ECG_DEVICE="${CARDIOAGENT_ECG_DEVICE:-cuda:0}"
+export UV_CACHE_DIR="$ECG_AGENT_STORAGE/cache/uv"
+export UV_PYTHON_INSTALL_DIR="$ECG_AGENT_STORAGE/envs/python"
+export PIP_CACHE_DIR="$ECG_AGENT_STORAGE/cache/pip"
+export XDG_CACHE_HOME="$ECG_AGENT_STORAGE/cache"
+export HF_HOME="$ECG_AGENT_STORAGE/cache/huggingface"
+export TORCH_HOME="$ECG_AGENT_STORAGE/cache/torch"
+export CUDA_CACHE_PATH="$ECG_AGENT_STORAGE/cache/cuda"
+export TRITON_CACHE_DIR="$ECG_AGENT_STORAGE/cache/triton"
+export TORCHINDUCTOR_CACHE_DIR="$ECG_AGENT_STORAGE/cache/torchinductor"
+export TORCH_EXTENSIONS_DIR="$ECG_AGENT_STORAGE/cache/torch_extensions"
+export MPLCONFIGDIR="$ECG_AGENT_STORAGE/cache/matplotlib"
+export PYTHONPYCACHEPREFIX="$ECG_AGENT_STORAGE/cache/pycache"
+export TMPDIR="$ECG_AGENT_STORAGE/tmp"
+export UV_SYSTEM_CERTS=true
+export PATH="$ECG_AGENT_STORAGE/tools:$PATH"
+mkdir -p "$CUDA_CACHE_PATH" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" "$TORCH_EXTENSIONS_DIR"
+source "$ECG_AGENT_STORAGE/envs/ecgagent/bin/activate"
+cd "$ECG_AGENT_CODE"

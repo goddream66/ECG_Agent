@@ -2,6 +2,9 @@
 __pycache__/
 *.egg-info/
 data/
+datasets/
+envs/
+cache/
 models/*
 !models/ASSETS.md
 !models/SHA256SUMS.csv
@@ -15,3 +18,11 @@ tmp/
 !.env.example
 *.pem
 *.key
+
+# Also ignore symlink entries used by the server checkout.
+/data
+/runs
+/.venv
+/src/*.egg-info
+/ops/server/activate.sh
+/activate.sh

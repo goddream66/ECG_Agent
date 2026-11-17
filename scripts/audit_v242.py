@@ -4,15 +4,15 @@ from pathlib import Path
 import numpy as np
 import torch
 from scipy.stats import rankdata
-from cardioagent.dataset import save_json, digest
-from cardioagent.policy import shared_risk
-from cardioagent.policy.qc_continuous import fit as fit_qc
-from cardioagent.policy.qc_prior import validate_priors
-from cardioagent.policy.replay import read_replay
-from cardioagent.policy.conditional_value import ConditionalNetwork, Variant
-from cardioagent.policy.selection import run
-from cardioagent.policy.stopping import trial_weights
-from cardioagent.policy.value import run_policy
+from cardioagent.common.io import save_json, digest
+from cardioagent.legacy.multimodal.policy import shared_risk
+from cardioagent.legacy.multimodal.policy.qc_continuous import fit as fit_qc
+from cardioagent.legacy.multimodal.policy.qc_prior import validate_priors
+from cardioagent.legacy.multimodal.policy.replay import read_replay
+from cardioagent.legacy.multimodal.policy.conditional_value import ConditionalNetwork, Variant
+from cardioagent.legacy.multimodal.policy.selection import run
+from cardioagent.legacy.multimodal.policy.stopping import trial_weights
+from cardioagent.legacy.multimodal.policy.value import run_policy
 
 
 def vector(task, result):

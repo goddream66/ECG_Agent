@@ -1,1 +1,1 @@
-"""Task-conditioned physiological evidence analysis."""
+"""Compatibility namespace; individual modules alias the preserved implementations."""

@@ -3,7 +3,7 @@
 import numpy as np
 from scipy import signal
 
-from ..signal_tools import bandpass
+from cardioagent.common.signal_tools import bandpass
 
 
 def _ratio(a: float, b: float) -> float | None:

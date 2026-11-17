@@ -1,0 +1,19 @@
+{
+  "commit": "04edac702b61c91face519774ddcc0cd712fef23",
+  "sources": {
+    "util.py": {
+      "url": "https://github.com/PKUDigitalHealth/ECGFounder/blob/04edac702b61c91face519774ddcc0cd712fef23/util.py",
+      "sha256": "79972b6c8e769f75e1fa766879ce7de50125e621fb0b0dcce1af45e3bfac4184"
+    },
+    "dataset.py": {
+      "url": "https://github.com/PKUDigitalHealth/ECGFounder/blob/04edac702b61c91face519774ddcc0cd712fef23/dataset.py",
+      "sha256": "b113a9c35fdbb94923e2a88ccbaff4b4e04a5ca1fc8c732ee9fa6de5d49b4a31"
+    }
+  },
+  "license": "MIT",
+  "adapted_functions": [
+    "filter_bandpass",
+    "z_score_normalization"
+  ],
+  "notes": "window-local, invalid values rejected, explicit resampling; does not copy task-specific dataset classes"
+}

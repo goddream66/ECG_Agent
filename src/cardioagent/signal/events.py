@@ -7,8 +7,8 @@ import numpy as np
 from scipy import signal
 from wfdb.processing import xqrs_detect
 
-from ..signal_tools import bandpass, measure_pcg_period
-from .synchronization import TimeAxis
+from cardioagent.common.signal_tools import bandpass, measure_pcg_period
+from cardioagent.signal.synchronization import TimeAxis
 
 
 @dataclass(frozen=True)

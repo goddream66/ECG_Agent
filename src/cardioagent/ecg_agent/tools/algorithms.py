@@ -1,9 +1,9 @@
 """Window-local ECG tools. No annotations or other modalities are accepted."""
 from time import perf_counter
 import numpy as np
-from ..signal.events import detect_events
-from ..signal.quality import quality_features
-from ..signal.synchronization import TimeAxis
+from cardioagent.signal.events import detect_events
+from cardioagent.signal.quality import quality_features
+from cardioagent.signal.synchronization import TimeAxis
 
 
 def inspect(values, fs):

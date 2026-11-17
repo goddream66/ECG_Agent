@@ -21,7 +21,7 @@ def measurement(values,fs,start,commit_start,end):
 class ECGAgentTests(unittest.TestCase):
     def test_future_suffix_cannot_change_first_commit(self):
         a=np.ones((6000,2));b=a.copy();b[3000:]*=100
-        with patch('cardioagent.ecg_agent.tools.inspect',qc), patch('cardioagent.ecg_agent.tools.measure',measurement):
+        with patch('cardioagent.ecg_agent.tools.algorithms.inspect',qc), patch('cardioagent.ecg_agent.tools.algorithms.measure',measurement):
             x=ECGAgent().run(wave(a))['ledger'][0]
             y=ECGAgent().run(wave(b))['ledger'][0]
         for key in ('rate_bpm','r_peaks_s','trace','lead','status'):self.assertEqual(x[key],y[key])
@@ -30,7 +30,7 @@ class ECGAgentTests(unittest.TestCase):
         def bad_qc(values,fs):
             return {'score':1.,'reasons':['flat'] if values[0]==1 else [],'duration_ms':0.}
         x=np.ones((3000,2));x[:,1]=2
-        with patch('cardioagent.ecg_agent.tools.inspect',bad_qc),patch('cardioagent.ecg_agent.tools.measure',measurement):
+        with patch('cardioagent.ecg_agent.tools.algorithms.inspect',bad_qc),patch('cardioagent.ecg_agent.tools.algorithms.measure',measurement):
             result=ECGAgent().run(wave(x))['ledger'][0]
             limited=ECGAgent(Config(measurement_budget=1)).run(wave(x))['ledger'][0]
         self.assertEqual(result['lead'],'V5');self.assertEqual(result['cost']['measurements'],2)
@@ -40,14 +40,14 @@ class ECGAgentTests(unittest.TestCase):
         def irregular(values,fs,start,commit_start,end):
             return measurement(values,fs,start,commit_start,end)|{'rr_cv':.3,'rate_bpm':60. if values[0]==1 else 90.}
         x=np.ones((3000,2));x[:,1]=2
-        with patch('cardioagent.ecg_agent.tools.inspect',qc),patch('cardioagent.ecg_agent.tools.measure',irregular):
+        with patch('cardioagent.ecg_agent.tools.algorithms.inspect',qc),patch('cardioagent.ecg_agent.tools.algorithms.measure',irregular):
             result=ECGAgent().run(wave(x))['ledger'][0]
         self.assertEqual(result['reason'],'lead_disagreement');self.assertIsNone(result['rate_bpm'])
         self.assertEqual(result['r_peaks_s'],[])
 
     def test_irregularity_alone_does_not_discard_single_lead(self):
         def irregular(*args):return measurement(*args)|{'rr_cv':.3}
-        with patch('cardioagent.ecg_agent.tools.inspect',qc),patch('cardioagent.ecg_agent.tools.measure',irregular):
+        with patch('cardioagent.ecg_agent.tools.algorithms.inspect',qc),patch('cardioagent.ecg_agent.tools.algorithms.measure',irregular):
             result=ECGAgent().run(Waveform(np.ones((3000,1)),100.,('II',),('mV',)))['ledger'][0]
         self.assertEqual(result['status'],'measured')
 
@@ -61,12 +61,12 @@ class ECGAgentTests(unittest.TestCase):
         with self.assertRaises(ValueError):Config(measurement_budget=0)
         agent=ECGAgent()
         with self.assertRaises(ValueError):agent.step(wave(np.ones((6000,2))))
-        with patch('cardioagent.ecg_agent.tools.inspect',qc),patch('cardioagent.ecg_agent.tools.measure',measurement):agent.step(wave())
+        with patch('cardioagent.ecg_agent.tools.algorithms.inspect',qc),patch('cardioagent.ecg_agent.tools.algorithms.measure',measurement):agent.step(wave())
         with self.assertRaises(ValueError):agent.step(wave())
 
     def test_bounded_block_stream_matches_prefix_stream(self):
         raw = np.ones((6500,2))
-        with patch('cardioagent.ecg_agent.tools.inspect',qc),patch('cardioagent.ecg_agent.tools.measure',measurement):
+        with patch('cardioagent.ecg_agent.tools.algorithms.inspect',qc),patch('cardioagent.ecg_agent.tools.algorithms.measure',measurement):
             bounded=ECGAgent().run(wave(raw))['ledger']
             agent=ECGAgent()
             for end in (3000,6000,6500):agent.step(wave(raw[:end]))

@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/PKUDigitalHealth/ECGFounder",
+  "license": "MIT",
+  "origin": "byte-identical copies of the model assets used before refactoring",
+  "sha256": {
+    "LICENSE": "b872b97f0675d67a350880e22e21ffd9fb76dfcb8989f89d950bd3f49eca959e",
+    "net1d.py": "832bf90e05e20e62db6f9c7007acf7f0b1f739938ab80fa9b2c1ad438e8da7f7",
+    "tasks.txt": "7c087a0d383c7ea9ae9b818ad00a551b029334edfa5f1fbb5036bfbaa0df0c39"
+  }
+}

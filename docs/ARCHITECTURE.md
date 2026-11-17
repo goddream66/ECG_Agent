@@ -1,57 +1,41 @@
-# ECG Agent 工程结构
+# ECG event architecture
 
-当前主工程：D:/CardioAgent。D:/ECGagent/ECG 是本轮审查的上游参考，未改动。
+`experiments.runner` selects tasks, assets and execution. It feeds admitted windows
+to `agent.replay_event_record`. The controller calls a rule policy, ToolSession,
+EvidenceLedger and EventTracker. Only handlers requested by that policy execute.
 
-采用通用 Agent 项目常见的分层：控制器、工具契约、注册表、执行运行时、信号算法、评价与测试分开。参考 smolagents 的具名工具/schema 设计与 LangGraph 的状态/执行分离；本轮未复制这两个框架代码，也未额外引入框架依赖。
+Dependencies:
 
-```text
-src/cardioagent/
-  ecg_agent/
-    agent.py                 # ECG 规则控制器：通过 ToolSession 调用工具
-    tools.py                 # 旧版测量兼容层，保留已验证测量语义
-    toolkit/
-      contracts.py           # Pydantic 参数、结果信封、ToolSpec、ToolContext
-      runtime.py             # 注册、校验、因果边界、缓存、调用预算、轨迹
-      catalog.py             # 唯一工具注册入口与默认白名单
-      measurements.py        # RR、扫描及上游启发式测量的适配实现
-    evaluation.py            # 人工标注读入与评价；不进入工具运行时
-  signal/                    # 共享底层信号检测与质量算法
-  policy/                    # 旧版策略实验，保留原入口
-configs/ecg_tools_v1.json     # 从注册表生成的全工具/schema 目录
-scripts/export_ecg_tools.py   # 目录生成器
-third_party/                 # 来源指纹与保留许可证
-  ecg_scroll_source.json
-  licenses/ECG-Scroll-MIT.txt
-tests/test_ecg_toolkit.py
-.github/workflows/tests.yml  # GitHub Actions 测试配置（本地已测试，远程尚未运行）
-AGENTS.md                    # 后续代码修改规范
-CONTRIBUTING.md
-docs/TOOL_DEVELOPMENT.md
-THIRD_PARTY_NOTICES.md
+```
+experiments -> agent -> policies / memory / harness / tools -> models / signal / common
+evaluation -> independent references and pure metrics
 ```
 
-## 工具执行
+Current online modules do not import evaluation, benchmarks, experiments or legacy.
+Legacy class names exported by package __getattr__ are resolved lazily, only on an
+explicit old API request. `benchmarks` and `toolkit` are compatibility facades.
 
-`controller -> ToolSession.call(name, arguments) -> 参数校验 -> 可见时间窗与预算检查 -> handler -> ToolResult -> 审计轨迹`。
+Policy evidence interpretation is in policies/rule_review.py and labels.py.
+Lifecycle thresholds are in policies/event_rules.py. Memory preserves event state,
+support/counter-evidence/unknown intervals and actual commit timestamps.
+No future samples, annotations or precomputed unrequested scores reach the policy.
+Preprocessing stays offline on completed ten-second windows.
 
-运行时复制当前已到达信号，丢弃游标后的样本，避免全记录预检测。缓存仅在该不可变输入快照的 session 内复用；外部返回值的修改不会污染缓存与既有轨迹。该模块为单线程 session，不宣称并发执行保证。
+Tools are declared/versioned in tools/catalog.py, validated with schemas.py, and
+executed through harness/runtime.py. Tools' algorithms and the model predictor are
+separate from the runtime's budget, availability, caching and error protocol.
 
-工具没有网络、文件搜索或标注读取能力；不接受任意 Python 代码。未知工具/参数不会偷偷回退成其他工具。
+The single GPU dispatcher lives in harness/execution.py. It owns one model in one
+process, with float32 and TF32 disabled. CPU keeps the process pool. Cached/fixed
+replay never runs a neural model. A blocking scalar transfer is included in neural
+wall-clock cost; model loading synchronizes CUDA.
 
-默认 4 项：assess_quality、detect_beats、get_rate_rhythm、get_feature_profile。
-显式启用后另外 5 项：get_p_wave_proxy、get_qrs_proxy、get_st_proxy、get_t_wave_proxy、get_qt_proxy。
+Physical storage is configured by ECG_AGENT_CODE and ECG_AGENT_STORAGE. Weights,
+waveforms, environments, caches and outputs stay on the data disk. Only the copied
+ECGFounder architecture and class names are vendored in third_party/ecgfounder;
+their bytes are verified against the previous assets.
 
-近似算法的限制在工具描述和每次结果 warnings 中保留。标准 PR/QRS/QT 波形界定尚未实现；这些代理输出不能替代临床间期测量。ECGFounder 适配器保留原位置，本轮未把未经验证的分类结果注册成诊断工具。
-
-## 成本与兼容性
-
-ToolSession 的 max_calls 限制所有请求（含无效/缓存请求），每次请求生成证据编号并计时。ECGAgent 的 measurement_budget 仍独立限制导联测量次数；QC 不属于测量次数，但有单独成本。代理工具的内部峰检测成本包含在调用耗时中，未伪装为免费。
-
-agent ledger 新增 tool_calls；原有 observations/previews/trace/cost 字段保留。
-早期 V2.x 研究代码和数据未迁移，以免修改已有实验解释。
-
-## 本地 Git
-
-已初始化 D:/CardioAgent 的本地 main 分支，并保存工具重构前的源码快照。
-数据、权重、运行输出、ZIP、临时目录和 .env 不纳入版本管理。未创建 GitHub 仓库或推送。
-配置文件不存储凭据。当前任务的后续源码改动通过本地提交记录；实验报告在 runs 中独立保存。
+Legacy root modules are small import aliases. Current CLI routing does not eagerly
+load the legacy LLM workflow. scripts/run_ecg_events.py delegates to the package,
+and root shell entry points delegate to ops/server. No new framework dependency,
+classification head, inference threshold, event score or benchmark is introduced.

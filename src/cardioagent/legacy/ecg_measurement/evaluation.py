@@ -3,11 +3,11 @@ from dataclasses import replace
 from pathlib import Path
 import numpy as np
 import wfdb
-from ..dataset import digest, save_json
-from ..event_audit import MITDB_BEATS, MITDB_RECORDS, event_errors, aggregate_events
-from ..recording import Waveform
-from ..provenance import save_provenance
-from .agent import Config, ECGAgent
+from cardioagent.common.io import digest, save_json
+from cardioagent.legacy.multimodal.event_audit import MITDB_BEATS, MITDB_RECORDS, event_errors, aggregate_events
+from cardioagent.common.recording import Waveform
+from cardioagent.legacy.multimodal.provenance import save_provenance
+from cardioagent.legacy.ecg_measurement.agent import Config, ECGAgent
 
 
 def read_ecg(stem):

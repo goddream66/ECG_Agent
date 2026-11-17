@@ -18,6 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ecg-tools = ["neurokit2==0.2.12"]
 models = ["torch>=2.6", "torchaudio>=2.6"]
 annotation = ["matplotlib>=3.8"]
 

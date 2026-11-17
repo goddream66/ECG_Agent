@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 
-from ..recording import Recording, Waveform, sample_span
+from cardioagent.common.recording import Recording, Waveform, sample_span
 
 
 @dataclass(frozen=True)

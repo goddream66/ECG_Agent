@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/goddream66/NeuroECG",
+  "commit": "95409f8df36737014a4be922f6464fe31f975fcb",
+  "retrieved_date": "2026-11-13",
+  "timezone": "Asia/Shanghai",
+  "scope": "Unmodified preprocessing source only; no runtime integration",
+  "files": [
+    {
+      "path": "process_easy_500hz.py",
+      "url": "https://raw.githubusercontent.com/goddream66/NeuroECG/95409f8df36737014a4be922f6464fe31f975fcb/process_easy_500hz.py",
+      "bytes": 36273,
+      "sha256": "2e8e3a5299b62d0bc17f30ca45314469bb75af89be49ed72a3e562b47af57b15",
+      "modified": false
+    }
+  ],
+  "license": "No LICENSE/COPYING file found in the inspected upstream tree; no license inferred"
+}
