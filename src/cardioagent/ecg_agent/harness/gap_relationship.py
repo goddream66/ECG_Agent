@@ -15,8 +15,8 @@ RELATIONS = ('continuous', 'separate', 'uncertain')
 class GapJudgment(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid')
     relation: Literal['continuous', 'separate', 'uncertain']
-    evidence: list[str] = Field(max_length=20)
-    support: list[str] = Field(max_length=12)
+    evidence: list[str]
+    support: list[str]
     reason: str = Field(min_length=1, max_length=280)
 
 

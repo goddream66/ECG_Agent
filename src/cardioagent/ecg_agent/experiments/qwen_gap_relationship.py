@@ -77,7 +77,7 @@ def revisions(judgment, state, refs):
 def worker(device, jobs, shifts_root, model_path, output):
     os.environ['CUDA_VISIBLE_DEVICES'] = str(device)
     reviewer = GapRelationshipReviewer(build_chat_model(dict(
-        provider='transformers', model_path=str(model_path), device='cuda:0', max_new_tokens=192)))
+        provider='transformers', model_path=str(model_path), device='cuda:0', max_new_tokens=384)))
     for _, _, _, path, count, _ in jobs:
         shifts = {}
         if count:
