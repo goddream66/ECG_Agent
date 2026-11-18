@@ -32,6 +32,8 @@ def validate_recommendation(recommendation, packet):
         raise ValueError('unknown_evidence_reference')
     if recommendation.action in ('merge', 'link_only') and not ids:
         raise ValueError('missing_evidence_reference')
+    if packet['sustained_opposition'] and recommendation.action in ('merge', 'link_only'):
+        raise ValueError('link_despite_sustained_opposition')
     if recommendation.action == 'merge' and not all(
         any(set(pair) <= ids for pair in choices) for choices in packet['gap_support']
     ):

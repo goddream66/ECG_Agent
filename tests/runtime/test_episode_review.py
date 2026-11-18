@@ -37,3 +37,6 @@ class EpisodeReviewTests(unittest.TestCase):
             validate_recommendation(valid.model_copy(update={'evidence_ids': valid_ids[:2]}), packet)
         with self.assertRaisesRegex(ValueError, 'unknown_evidence_reference'):
             validate_recommendation(valid.model_copy(update={'evidence_ids': ['future']}), packet)
+        packet['sustained_opposition'] = True
+        with self.assertRaisesRegex(ValueError, 'link_despite_sustained_opposition'):
+            validate_recommendation(valid.model_copy(update={'action': 'link_only'}), packet)

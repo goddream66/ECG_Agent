@@ -75,9 +75,11 @@ def _packet(left, right, left_closed, recent, cursor, threshold, gap_limit):
     index = {}
     compact = []
     support = []
+    opposition = []
     for win in windows:
         entry = {**win, 'leads': {}}
         choices = []
+        opposing = []
         for lead, data in win['leads'].items():
             item = dict(data)
             for key in ('score_id', 'quality_id'):
@@ -86,16 +88,24 @@ def _packet(left, right, left_closed, recent, cursor, threshold, gap_limit):
                     index[alias] = item[key]
                     item[key] = alias
             entry['leads'][lead] = item
-            if (item['score'] is not None and max(item['score']) >= threshold
-                    and item['quality'] == 'no_warning'):
-                choices.append([item['score_id'], item['quality_id']])
+            if item['score'] is not None and item['quality'] == 'no_warning':
+                score = max(item['score'])
+                pair = [item['score_id'], item['quality_id']]
+                if score >= threshold:
+                    choices.append(pair)
+                elif score < win['threshold'] and win['decision'] == 'negative':
+                    opposing.append(pair)
         if a <= win['window_s'][0] < b:
             support.append(choices)
+            opposition.append(opposing)
         compact.append(entry)
+    negative_only = [bool(against) and not for_gap for against, for_gap in zip(opposition, support)]
     return {'cursor_s': cursor, 'gap_s': [a, b], 'start_threshold': threshold,
             'left': dict(left, closed_at_s=left_closed['closed_at_s'],
                          termination_reason=left_closed['termination_reason']),
-            'right': right, 'windows': compact, 'evidence_index': index, 'gap_support': support}
+            'right': right, 'windows': compact, 'evidence_index': index, 'gap_support': support,
+            'gap_opposition': opposition,
+            'sustained_opposition': any(x and y for x, y in zip(negative_only, negative_only[1:]))}
 
 
 def review_packets(traces, updates, evidence, events, *, start_threshold, gap_limit=60):
