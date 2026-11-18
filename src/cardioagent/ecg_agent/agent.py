@@ -16,13 +16,15 @@ from cardioagent.ecg_agent.harness import ToolContext, ToolSession
 from cardioagent.ecg_agent.data.afdb import CHANNELS, SOURCE_FS, _arrivals
 
 def replay_event_record(cache, record, task, channel, config, score, logs, context,
-                        *, policy='event-adaptive', raw_root=None, reviewer=None):
+                        *, policy='event-adaptive', raw_root=None, reviewer=None, rule_review=None, source_fs=SOURCE_FS):
     """The scorer is invoked only inside a requested current-window model tool."""
     tracker = EventTracker(config)
     if policy not in ('event-adaptive', 'legacy-dual', 'event-react'):
         raise ValueError('Unknown event policy')
     if policy == 'event-react' and reviewer is None:
         raise ValueError('event-react requires an explicit LLM reviewer')
+    if rule_review is not None and policy != 'event-adaptive':
+        raise ValueError('Custom rule review requires event-adaptive replay')
     if policy=='legacy-dual' and config.continue_threshold is not None:
         raise ValueError('Legacy dual policy does not implement a state-dependent score threshold')
     legacy = EventMemory() if policy == 'legacy-dual' else None
@@ -34,13 +36,13 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
     raw = None
     if policy in ('event-adaptive', 'event-react'):
         raw = wfdb.rdrecord(str(Path(raw_root) / record['record_id']))
-        if raw.fs != SOURCE_FS or tuple(raw.sig_name) != CHANNELS or raw.sig_len != record['source_record_samples']:
+        if raw.fs != source_fs or tuple(raw.sig_name) != CHANNELS or raw.sig_len != record['source_record_samples']:
             raise ValueError('Raw data/cache coordinates disagree')
     secondary = next(x for x in CHANNELS if x != channel)
     cursor = float(task['start_s'])
-    for block in _arrivals(Path(cache), record, CHANNELS, task['start_s'], task['end_s']):
+    for block in _arrivals(Path(cache), record, CHANNELS, task['start_s'], task['end_s'], source_fs=source_fs):
         row = block[channel][0]
-        start, cursor = row['start_sample'] / SOURCE_FS, row['end_sample'] / SOURCE_FS
+        start, cursor = row['start_sample'] / source_fs, row['end_sample'] / source_fs
         primary = None
         evidence_ids = []
         calls = []
@@ -49,7 +51,7 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
             decision, checked, reason = 'unavailable', False, 'incomplete_window'
         else:
             if raw is not None:
-                w = Waveform(raw.p_signal[row['start_sample']:row['end_sample']], SOURCE_FS,
+                w = Waveform(raw.p_signal[row['start_sample']:row['end_sample']], source_fs,
                              CHANNELS, tuple(raw.units))
             else:
                 values = np.full((5000, 2), np.nan, dtype=np.float32)
@@ -105,7 +107,8 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
                 decision, checked, reason = reviewer.review(call, primary, secondary, tracker, config,
                                                             session, logs.emit)
             else:
-                decision, checked, reason = decide_event(call, primary, secondary, tracker, config)
+                review = rule_review if rule_review is not None else decide_event
+                decision, checked, reason = review(call, primary, secondary, tracker, config)
             calls = session.calls
             evidence_ids = [r['evidence_id'] for r in calls]
             for result in calls:

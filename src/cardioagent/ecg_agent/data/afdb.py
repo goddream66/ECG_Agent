@@ -9,17 +9,17 @@ CHANNELS=("ECG1","ECG2")
 SOURCE_FS=250
 
 def _arrivals(cache: Path, record: dict, channels: tuple[str, ...], start_s: float,
-              end_s: float) -> Iterator[dict[str, tuple[dict, np.ndarray | None]]]:
+              end_s: float, *, source_fs: int = SOURCE_FS) -> Iterator[dict[str, tuple[dict, np.ndarray | None]]]:
     """Advance in file order and release selected channels together at each window end."""
     name = record["record_id"]
-    if not isinstance(name, str) or len(name) != 5 or any(c not in "0123456789" for c in name):
-        raise ValueError(f"Invalid AFDB record ID: {name!r}")
-    if record["source_rate_hz"] != SOURCE_FS or end_s > record["source_samples"] / SOURCE_FS + 1e-8:
+    if not isinstance(name, str) or not name or any(c not in "0123456789" for c in name):
+        raise ValueError(f"Invalid record ID: {name!r}")
+    if record["source_rate_hz"] != source_fs or end_s > record["source_samples"] / source_fs + 1e-8:
         raise ValueError(f"{name}: cache does not cover the task span")
     data = np.load(cache / f"{name}.npy", mmap_mode="r", allow_pickle=False)
     if data.ndim != 2 or data.shape[1] != TARGET_FS * WINDOW_SECONDS or data.dtype != np.float32:
         raise ValueError(f"{name}: invalid waveform cache shape or dtype")
-    width = WINDOW_SECONDS * SOURCE_FS
+    width = WINDOW_SECONDS * source_fs
     next_row = 0
     expected_start = 0
     pending = {}
@@ -28,7 +28,7 @@ def _arrivals(cache: Path, record: dict, channels: tuple[str, ...], start_s: flo
             row = json.loads(line)
             start = (line_number // len(CHANNELS)) * width
             end = min(start + width, record["source_samples"])
-            if end / SOURCE_FS > end_s:
+            if end / source_fs > end_s:
                 break
             if (row["record_id"] != name or row["channel"] != CHANNELS[line_number % len(CHANNELS)]
                     or row["start_sample"] != start or row["end_sample"] != end or end <= start):
@@ -47,7 +47,7 @@ def _arrivals(cache: Path, record: dict, channels: tuple[str, ...], start_s: flo
                 next_row += 1
             elif location is not None:
                 raise ValueError(f"{name}: unavailable window points to a waveform")
-            if row["channel"] in channels and start / SOURCE_FS >= start_s:
+            if row["channel"] in channels and start / source_fs >= start_s:
                 values = np.array(data[location], copy=True) if location is not None else None
                 pending[row["channel"]] = (row, values)
             if row["channel"] == CHANNELS[-1]:
@@ -56,7 +56,7 @@ def _arrivals(cache: Path, record: dict, channels: tuple[str, ...], start_s: flo
                     yield pending
                     pending = {}
     last_complete = min(record["source_samples"], math.floor(end_s / WINDOW_SECONDS) * width)
-    if expected_start < last_complete or (end_s >= record["source_samples"] / SOURCE_FS and expected_start != record["source_samples"]):
+    if expected_start < last_complete or (end_s >= record["source_samples"] / source_fs and expected_start != record["source_samples"]):
         raise ValueError(f"{name}: window index ends before the requested span")
 
 

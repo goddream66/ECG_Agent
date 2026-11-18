@@ -20,11 +20,11 @@ CHANNELS = ("ECG1", "ECG2")
 WINDOWS_PER_READ = 60
 
 
-def write_record(stem: Path, output: Path, duration_s: int | None) -> dict:
+def write_record(stem: Path, output: Path, duration_s: int | None, *, source_fs: int = 250) -> dict:
     header = wfdb.rdheader(str(stem))
-    fs = 250
+    fs = source_fs
     if header.fs != fs or tuple(header.sig_name) != CHANNELS or not header.sig_len:
-        raise ValueError(f"{stem.name}: expected nonempty AFDB data with ECG1/ECG2 at 250 Hz")
+        raise ValueError(f"{stem.name}: expected nonempty data with ECG1/ECG2 at {fs} Hz")
     count = min(header.sig_len, duration_s * fs) if duration_s is not None else header.sig_len
     width = WINDOW_SECONDS * fs
     batch_width = WINDOWS_PER_READ * width

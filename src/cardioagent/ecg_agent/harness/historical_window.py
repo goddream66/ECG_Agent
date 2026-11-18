@@ -12,37 +12,38 @@ from cardioagent.ecg_agent.schemas import ShiftedScoreArgs, ToolContext
 
 
 class HistoricalWindow:
-    def __init__(self, raw_root, task, predict, *, retention_s=120):
+    def __init__(self, raw_root, task, predict, *, retention_s=120, source_fs=SOURCE_FS):
         name = task['record_id']
-        if len(name) != 5 or not name.isascii() or not name.isdecimal():
-            raise ValueError('Expected an AFDB record ID')
+        if not name.isascii() or not name.isdecimal():
+            raise ValueError('Expected a numeric record ID')
         self.stem = str(Path(raw_root) / name)
         self.task = task
         self.predict = predict
         self.retention_s = retention_s
+        self.source_fs = source_fs
 
     def session(self, start, end, cursor, context, *, allow_shifted=False):
         if (end - start != WINDOW_SECONDS
                 or not self.task['start_s'] <= start < end <= cursor <= self.task['end_s']
                 or cursor - start > self.retention_s):
             raise ValueError('Historical window is outside the arrived retained task span')
-        samples = [time * SOURCE_FS for time in (start, end, cursor)]
+        samples = [time * self.source_fs for time in (start, end, cursor)]
         if any(abs(value - round(value)) > 1e-6 for value in samples):
             raise ValueError('Historical window must align with the source sample grid')
         first, _, arrived = map(round, samples)
         raw = wfdb.rdrecord(self.stem, sampfrom=first, sampto=arrived)
-        if (raw.fs != SOURCE_FS or tuple(raw.sig_name) != CHANNELS
+        if (raw.fs != self.source_fs or tuple(raw.sig_name) != CHANNELS
                 or raw.p_signal.shape != (arrived - first, len(CHANNELS))):
-            raise ValueError('Historical signal does not match AFDB coordinates')
+            raise ValueError('Historical signal does not match record coordinates')
         wave = Waveform(raw.p_signal, raw.fs, tuple(raw.sig_name), tuple(raw.units))
 
         def model_window(lead, a, b):
             if (a, b) != (start, end):
                 return None, self.predict
             values = wave.window(lead, 0, end - start)
-            if invalid_spans(values, SOURCE_FS):
+            if invalid_spans(values, self.source_fs):
                 return None, self.predict
-            return preprocess_window(values, SOURCE_FS), self.predict
+            return preprocess_window(values, self.source_fs), self.predict
 
         return ToolSession(ToolContext(wave, start, cursor), max_calls=4,
                            cached_model=model_window, evidence_context=context, allow_experimental=allow_shifted)

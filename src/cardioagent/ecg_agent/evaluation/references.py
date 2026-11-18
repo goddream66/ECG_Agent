@@ -67,7 +67,8 @@ def prepare(source,raw_root,output,*,max_records=6,duration_s=1800.,dataset='afd
     return output
 
 
-def prepare_validity(tasks_file, raw_root, cache, output):
+def prepare_validity(tasks_file, raw_root, cache, output, *, rhythm_labels=('AFIB','AFL','J','N'),
+                     scope='AFDB exploratory development'):
     """Read independent .atr only in evaluation; do not modify upstream targets."""
     from .metrics import union
     tasks = read_jsonl(tasks_file, 'task_id')
@@ -84,7 +85,7 @@ def prepare_validity(tasks_file, raw_root, cache, output):
             b = boundaries[i+1][0] if i+1 < len(boundaries) else header.sig_len/header.fs
             a, b = max(a, task['start_s']), min(b, task['end_s'])
             label = note.strip().lstrip('(').rstrip(')')
-            if b > a and label in ('AFIB','AFL','J','N'):
+            if b > a and label in rhythm_labels:
                 valid.append([a,b])
                 if label in ('AFIB','AFL'):
                     raw_af.append([a,b])
@@ -104,5 +105,5 @@ def prepare_validity(tasks_file, raw_root, cache, output):
                         'label_rule': 'upstream AFIB+AFL event targets unchanged; time metrics start at first rhythm annotation',
                         'unlabeled_s': task['end_s'] - task['start_s'] - union_seconds(valid)}
     save_json(Path(output), {'tasks_sha256': digest(Path(tasks_file)), 'records': rows,
-                            'inference_access': False, 'scope': 'AFDB exploratory development'})
+                            'inference_access': False, 'scope': scope})
     return rows
