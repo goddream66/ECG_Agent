@@ -1918,6 +1918,162 @@
         "title": "ToolResult",
         "type": "object"
       }
+    },
+    {
+      "name": "score_ecgfounder_shifted",
+      "description": "Score an arrived ten-second window shifted by \u00b15 seconds. Use actual shifted start/end coordinates. Sensitivity evidence only.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "lead": {
+            "description": "Exact ECG lead name in the current block",
+            "minLength": 1,
+            "title": "Lead",
+            "type": "string"
+          },
+          "start_s": {
+            "description": "Absolute start time, seconds",
+            "minimum": 0,
+            "title": "Start S",
+            "type": "number"
+          },
+          "end_s": {
+            "description": "Absolute end time, seconds, no later than cursor",
+            "exclusiveMinimum": 0,
+            "title": "End S",
+            "type": "number"
+          },
+          "offset_s": {
+            "description": "Actual window minus original window start, in seconds",
+            "enum": [
+              -5,
+              5
+            ],
+            "title": "Offset S",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lead",
+          "start_s",
+          "end_s",
+          "offset_s"
+        ],
+        "title": "ShiftedScoreArgs",
+        "type": "object"
+      },
+      "experimental": true,
+      "version": "1.0.0",
+      "source": "ECGFounder released single-channel checkpoint; window shift by CardioAgent",
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "evidence_id": {
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "tool": {
+            "title": "Tool",
+            "type": "string"
+          },
+          "tool_version": {
+            "title": "Tool Version",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "insufficient",
+              "error"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "window_s": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window S"
+          },
+          "available_at_s": {
+            "title": "Available At S",
+            "type": "number"
+          },
+          "lead": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lead"
+          },
+          "result": {
+            "additionalProperties": true,
+            "title": "Result",
+            "type": "object"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "duration_ms": {
+            "minimum": 0,
+            "title": "Duration Ms",
+            "type": "number"
+          },
+          "cached": {
+            "default": false,
+            "title": "Cached",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "tool",
+          "tool_version",
+          "status",
+          "window_s",
+          "available_at_s",
+          "lead",
+          "result",
+          "warnings",
+          "error",
+          "duration_ms"
+        ],
+        "title": "ToolResult",
+        "type": "object"
+      }
     }
   ]
 }

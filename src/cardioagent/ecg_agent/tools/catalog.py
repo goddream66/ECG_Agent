@@ -1,7 +1,7 @@
 """Explicit tool allowlist; annotation readers never appear in this registry."""
-from cardioagent.ecg_agent.schemas import ToolSpec, WindowArgs, BeatArgs, ProfileArgs, CachedScoreArgs
+from cardioagent.ecg_agent.schemas import ToolSpec, WindowArgs, BeatArgs, ProfileArgs, CachedScoreArgs, ShiftedScoreArgs
 import cardioagent.ecg_agent.tools.measurements as m
-from cardioagent.ecg_agent.tools.ecgfounder import score_ecgfounder
+from cardioagent.ecg_agent.tools.ecgfounder import score_ecgfounder, score_ecgfounder_shifted
 
 
 def build_registry(*, include_cached_model=False):
@@ -35,5 +35,11 @@ def build_registry(*, include_cached_model=False):
         registry.register(ToolSpec(
             'score_ecgfounder', 'Read uncalibrated AF and AFL scores for one arrived offline cache window.',
             CachedScoreArgs, score_ecgfounder, source='ECGFounder released single-channel checkpoint',
+        ))
+        registry.register(ToolSpec(
+            'score_ecgfounder_shifted', 'Score an arrived ten-second window shifted by ±5 seconds. '
+            'Use actual shifted start/end coordinates. Sensitivity evidence only.',
+            ShiftedScoreArgs, score_ecgfounder_shifted, experimental=True,
+            source='ECGFounder released single-channel checkpoint; window shift by CardioAgent',
         ))
     return registry

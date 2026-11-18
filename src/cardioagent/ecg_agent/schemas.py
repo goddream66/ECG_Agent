@@ -36,6 +36,16 @@ class CachedScoreArgs(WindowArgs):
         return self
 
 
+class ShiftedScoreArgs(CachedScoreArgs):
+    offset_s: Literal[-5, 5] = Field(description='Actual window minus original window start, in seconds')
+
+    @model_validator(mode='after')
+    def original_start(self):
+        if self.start_s - self.offset_s < 0:
+            raise ValueError('Original window starts before the recording')
+        return self
+
+
 class ProfileArgs(WindowArgs):
     bins: int = Field(default=6, ge=1, le=12)
 
