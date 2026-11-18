@@ -21,9 +21,9 @@ class GapJudgment(BaseModel):
 
 
 class GapRelationshipReviewer:
-    def __init__(self, model):
+    def __init__(self, model, *, prompt=PROMPT):
         self.model = model
-        self.prompt = PROMPT.read_text(encoding='utf-8')
+        self.prompt = prompt.read_text(encoding='utf-8')
 
     def judge(self, state):
         tools = [{'type': 'function', 'function': {'name': 'submit_gap_judgment',
@@ -46,7 +46,8 @@ class GapRelationshipReviewer:
             args = call['arguments']
             judgment = GapJudgment.model_validate_json(args) if isinstance(args, str) else GapJudgment.model_validate(args)
             ids = {item['id'] for item in state['observations']}
-            if not set(judgment.evidence + judgment.support) <= ids:
+            event_ids = {item['id'] for item in state.get('events', ())}
+            if not set(judgment.evidence) <= ids | event_ids or not set(judgment.support) <= ids:
                 raise ValueError('Unknown observation ID')
             if judgment.relation != 'uncertain' and not (judgment.evidence or judgment.support):
                 raise ValueError('Decisive judgment needs an observation')
