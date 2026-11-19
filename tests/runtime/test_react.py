@@ -314,9 +314,10 @@ class ReActTests(unittest.TestCase):
 
         model = DecisionModel([reply('submit_event_decision', {
             'decision': 'DEFER', 'event_id': 1, 'end_s': None,
-            'evidence_ids': [], 'reason': 'end unresolved'})])
+            'evidence_ids': ['previous-evidence'], 'reason': 'end unresolved'})])
         review = ReActReview(model, max_rounds=1, boundary_tools=True, event_control=True,
                              unified_event_decision=True)
+        review.history = [{'window_s': [10, 20], 'evidence_ids': ['previous-evidence']}]
         tracker = EventTracker(llm_closure=True)
         tracker.observe(0, 10, 'support')
         tracker.observe(10, 20, 'support')

@@ -207,7 +207,10 @@ class ReActReview:
                 if name == 'submit_event_decision' and self.unified_event_decision:
                     submitted = EventDecision.model_validate(args)
                     known = {r['evidence_id']: r for r in session.calls}
-                    if len(set(submitted.evidence_ids)) != len(submitted.evidence_ids) or not set(submitted.evidence_ids) <= known.keys():
+                    visible_history = {evidence_id for window in self.history
+                                       for evidence_id in window['evidence_ids']}
+                    if (len(set(submitted.evidence_ids)) != len(submitted.evidence_ids) or
+                            not set(submitted.evidence_ids) <= known.keys() | visible_history):
                         raise ValueError('Event decision cites unavailable or duplicate evidence')
                     if submitted.decision == 'CLOSE':
                         close = CloseEvent.model_validate({
@@ -217,7 +220,8 @@ class ReActReview:
                         if (active is None or active['confirmed_at_s'] is None
                                 or close.event_id != active['event_id']
                                 or not active['reported_intervals'][-1][0] < close.end_s <= end
-                                or not any(known[k]['tool'] in BOUNDARY_TOOLS and known[k]['status'] == 'ok'
+                                or not any(k in known and known[k]['tool'] in BOUNDARY_TOOLS
+                                           and known[k]['status'] == 'ok'
                                            and known[k]['window_s'][0] <= close.end_s <= known[k]['window_s'][1]
                                            for k in close.evidence_ids)):
                             raise ValueError('Close needs confirmed event and successful local boundary evidence')
