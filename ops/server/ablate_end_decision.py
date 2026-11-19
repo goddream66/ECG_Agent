@@ -5,11 +5,13 @@ This is an independent-cursor diagnostic, not an online event-F1 experiment.
 import argparse
 import hashlib
 import json
+import sys
 import time
 from pathlib import Path
 
 from cardioagent.ecg_agent.llm.providers import build_chat_model
-from ops.server.evaluate_local_end_judgment import read_rows, prompt_for
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from evaluate_local_end_judgment import read_rows, prompt_for
 
 FINAL_FIELDS = {
     'event_id': {'type': 'integer'}, 'end_s': {'type': 'number'},
