@@ -12,9 +12,10 @@ def build(cases, raw_root, output):
     import wfdb
 
     output.mkdir(parents=True, exist_ok=True)
-    fields = ('case_id', 'cursor_s', 'waveform_png', 'review_status', 'decidability',
+    fields = ('case_id', 'cursor_s', 'waveform_png', 'evidence_jsonl', 'review_status', 'decidability',
               'evidence_basis', 'reviewer', 'notes')
-    with (output / 'review.csv').open('w', encoding='utf-8', newline='') as file:
+    with (output / 'review.csv').open('w', encoding='utf-8', newline='') as file, \
+         (output / 'blinded_evidence.jsonl').open('w', encoding='utf-8') as evidence_file:
         writer = csv.DictWriter(file, fieldnames=fields)
         writer.writeheader()
         index = 0
@@ -48,8 +49,15 @@ def build(cases, raw_root, output):
                 name = f'case-{index:03d}.png'
                 figure.savefig(output / name, dpi=120)
                 plt.close(figure)
+                evidence_file.write(json.dumps({
+                    'case_id': f'case-{index:03d}', 'cursor_s': cursor,
+                    'measurements': [{key: item[key] for key in
+                        ('id', 'status', 'lead', 'window_s', 'result') if key in item}
+                        for item in case['primary'] + case['backup']],
+                }, ensure_ascii=False) + '\n')
                 writer.writerow({'case_id': f'case-{index:03d}', 'cursor_s': cursor,
-                                 'waveform_png': name, 'review_status': 'pending',
+                                 'waveform_png': name, 'evidence_jsonl': 'blinded_evidence.jsonl',
+                                 'review_status': 'pending',
                                  'decidability': '', 'evidence_basis': '', 'reviewer': '', 'notes': ''})
     # This linkage contains the reference labels for analysis after blind review.
     with (output / 'answer_key.jsonl').open('w', encoding='utf-8') as file:
