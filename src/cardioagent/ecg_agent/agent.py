@@ -43,6 +43,7 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
             raise ValueError('Raw data/cache coordinates disagree')
     secondary = next(x for x in CHANNELS if x != channel)
     boundary_review = policy == 'event-react' and getattr(reviewer, 'boundary_tools', False)
+    scheduled_evidence = policy == 'event-react' and getattr(reviewer, 'scheduled_evidence', False)
     retained_samples = 120 * source_fs
     cursor = float(task['start_s'])
     for block in _arrivals(Path(cache), record, CHANNELS, task['start_s'], task['end_s'], source_fs=source_fs):
@@ -81,12 +82,16 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
                     return None, lambda _: None
                 return preprocess_window(values, source_fs), lambda x: score(lead, x, None)
 
-            session = ToolSession(ToolContext(w, origin, cursor), max_calls=1 + config.review_budget,
+            session = ToolSession(ToolContext(w, origin, cursor),
+                                  max_calls=1 + config.review_budget * (2 if scheduled_evidence else 1),
                                   cached_model=model_window, evidence_context=context, allow_experimental=boundary_review)
 
+            scheduled = False
             def call_window(tool, args):
                 lead, a, b = args['lead'], args['start_s'], args['end_s']
-                if policy == 'event-react' and primary is not None:
+                if scheduled:
+                    trigger = 'scheduled_window_evidence'
+                elif policy == 'event-react' and primary is not None:
                     trigger = 'llm_review_request'
                 elif primary is None:
                     trigger = 'scheduled_primary_score'
@@ -123,9 +128,17 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
                 decision, checked, reason = decide(call, primary, secondary, config.threshold,
                                                    legacy, 'dual', config.review_budget)
             elif policy == 'event-react':
+                seeded = None
+                if scheduled_evidence:
+                    scheduled = True
+                    try:
+                        seeded = decide_event(call, primary, secondary, tracker, config)
+                    finally:
+                        scheduled = False
                 decision, checked, reason = reviewer.review(call, primary, secondary, tracker, config,
                                                             session, logs.emit,
-                                                            **({'call_window': call_window} if boundary_review else {}))
+                                                            **({'call_window': call_window} if boundary_review else {}),
+                                                            seeded_decision=seeded)
             else:
                 review = rule_review if rule_review is not None else decide_event
                 decision, checked, reason = review(call, primary, secondary, tracker, config)

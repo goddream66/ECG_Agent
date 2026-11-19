@@ -49,7 +49,7 @@ class CloseEvent(BaseModel):
 
 class ReActReview:
     def __init__(self, model, *, max_rounds=5, history_windows=6, boundary_tools=False,
-                 live_scoring=False, event_control=False):
+                 live_scoring=False, event_control=False, scheduled_evidence=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -60,13 +60,15 @@ class ReActReview:
         self.boundary_tools = boundary_tools
         self.live_scoring = boundary_tools and live_scoring
         self.event_control = event_control
+        self.scheduled_evidence = scheduled_evidence
         self.pending_close = None
         self.history = []
         self.identity = None
         self.counts = {'llm_calls': 0, 'llm_ms': 0., 'llm_prompt_tokens': 0,
                        'llm_completion_tokens': 0}
 
-    def review(self, call, primary, secondary, tracker, config, session, emit, *, call_window=None):
+    def review(self, call, primary, secondary, tracker, config, session, emit, *,
+               call_window=None, seeded_decision=None):
         self.pending_close = None
         start, end = primary['window_s']
         c = session.evidence_context
@@ -83,6 +85,10 @@ class ReActReview:
                  'unknown_start_s': tracker.unknown_start,
                  'primary_evidence': deepcopy(primary),
                  'remaining_tool_calls': session.max_calls - len(session.calls)}
+        if seeded_decision is not None:
+            state['scheduled_window_interpretation'] = {
+                'decision': seeded_decision[0], 'checked': seeded_decision[1],
+                'reason': seeded_decision[2]}
         # Active events may contain hours of intervals; expose bounded recent spans only.
         if state['active_event']:
             for key, value in state['active_event'].items():

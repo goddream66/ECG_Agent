@@ -134,6 +134,11 @@ unchanged; explicitly select `--policies event-react` and `--llm-config`.
 末尾仍会将未关闭事件标为右删失。候选事件的否定和超时规则保持原样。
 可直接选用 `configs/ecg/react_qwen_event_control.json` 作为本地 Qwen 配置；
 该文件只是入口配置，需在独立运行目录中执行实验。
+配置中的 `"scheduled_evidence": true` 会先按原窗口解释器取得质量及必要的
+备用导联证据，再交给 Qwen 做额外边界测量与关闭决策。窗口解释仍由同一解释器
+生成，Qwen 获得已测结果和解释。基础取证最多使用原 `review_budget`，Qwen
+另有同等数量的工具调用额度。对照中的“只建议边界”组必须使用相同的
+`scheduled_evidence` 和额度；结果需报告实际调用数与计算成本。
 
 `close_event` 要求当前存在对应的已确认事件，`end_s` 位于该事件起点之后、
 当前游标之前，并且至少引用一次本轮已成功执行且覆盖结束时刻的局部边界

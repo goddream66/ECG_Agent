@@ -339,6 +339,32 @@ class ReActTests(unittest.TestCase):
             updates = [json.loads(line) for line in (Path(job['target'])/'event_updates.jsonl').read_text().splitlines()]
             self.assertEqual(updates[-1]['event_update']['kind'], 'llm_close')
 
+    def test_scheduled_window_evidence_allows_confirmed_event(self):
+        from tests.runtime.test_event_checkpoints import EventCheckpointTests
+        from cardioagent.ecg_agent.experiments.runner import run_job
+
+        with TemporaryDirectory() as d:
+            job = EventCheckpointTests().make_job(Path(d))
+            job.update(policy='event-react', mode='cached',
+                       llm={'provider':'test', 'boundary_tools':True,
+                            'scheduled_evidence':True, 'event_control':True},
+                       config=EventConfig(enter_windows=1).to_dict())
+            model = ScriptModel([reply('finish_review', {'reason':'keep open', 'evidence_ids':[]})]*2)
+            t = np.arange(5000) / 250
+            raw = SimpleNamespace(fs=250, sig_name=('ECG1','ECG2'), sig_len=5000,
+                                  p_signal=np.column_stack([np.sin(2*np.pi*8*t)]*2),
+                                  units=('mV','mV'))
+            with patch('cardioagent.ecg_agent.llm.providers.build_chat_model', return_value=model), \
+                 patch('cardioagent.ecg_agent.agent.wfdb.rdrecord', return_value=raw):
+                result, _ = run_job(job)
+            self.assertEqual(result['events'][0]['confirmed_at_s'], 10.)
+            self.assertTrue(result['events'][0]['right_censored'])
+            first_state = json.loads(model.inputs[0][1]['content'])
+            self.assertEqual(first_state['scheduled_window_interpretation']['decision'], 'support')
+            acquisitions = [json.loads(line) for line in
+                            (Path(job['target'])/'acquisitions.jsonl').read_text().splitlines()]
+            self.assertIn('scheduled_window_evidence', {row['trigger_reason'] for row in acquisitions})
+
     def test_boundary_runner_scores_a_fractional_window_without_reading_future(self):
         from tests.runtime.test_event_checkpoints import EventCheckpointTests
         from cardioagent.ecg_agent.experiments import runner
