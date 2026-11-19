@@ -66,9 +66,9 @@ def prepare_case(raw_root, trace, evidence, cursor, lead, record, reference, sou
             'primary': [], 'backup': [], 'quality': [], 'rr': [], 'wave': []}
     for i, w in enumerate(recent, 1):
         a, b = w['start_s'], w['end_s']
-        case['primary'].append(_compact_existing(_evidence(visible, 'score_ecgfounder', primary, a, b), f'P{i}'))
-        case['backup'].append(_compact_existing(_evidence(visible, 'score_ecgfounder', backup, a, b), f'B{i}'))
-        case['quality'].append(_compact_existing(_evidence(visible, 'assess_quality', primary, a, b), f'Q{i}'))
+        case['primary'].append(_compact_existing(_evidence(visible, 'score_ecgfounder', primary, a, b), f'E{i}'))
+        case['backup'].append(_compact_existing(_evidence(visible, 'score_ecgfounder', backup, a, b), f'E{i+6}'))
+        case['quality'].append(_compact_existing(_evidence(visible, 'assess_quality', primary, a, b), f'E{i+12}'))
     # Each tool sees at most the current or preceding arrived 10-second window.
     history = HistoricalWindow(raw_root, {'record_id': record, 'start_s': 0, 'end_s': cursor},
                                predict=lambda *_: None)
@@ -77,11 +77,11 @@ def prepare_case(raw_root, trace, evidence, cursor, lead, record, reference, sou
         try:
             session = history.session(a, b, cursor, None, allow_shifted=True)
             args = {'lead': primary, 'start_s': a, 'end_s': b}
-            case['rr'].append(_compact_new(session.call('get_rate_rhythm', args), f'R{i}'))
-            case['wave'].append(_compact_new(session.call('get_beat_timeline_proxy', args), f'W{i}'))
+            case['rr'].append(_compact_new(session.call('get_rate_rhythm', args), f'E{i+18}'))
+            case['wave'].append(_compact_new(session.call('get_beat_timeline_proxy', args), f'E{i+20}'))
         except Exception as exc:
-            for key, prefix in (('rr', 'R'), ('wave', 'W')):
-                case[key].append({'id': f'{prefix}{i}', 'status': 'error', 'lead': primary,
+            for key, offset in (('rr', 18), ('wave', 20)):
+                case[key].append({'id': f'E{i+offset}', 'status': 'error', 'lead': primary,
                                   'window_s': [a, b], 'error': type(exc).__name__ + ': ' + str(exc)[:180]})
     return case
 
@@ -105,17 +105,24 @@ def judge(model, case, arm):
     aliases = {e['id']: e.get('source_evidence_id', e['id']) for value in view.values()
                if isinstance(value, list) for e in value if e['status'] not in ('not_measured', 'error')}
     messages = [{'role': 'system', 'content': SYSTEM},
-                {'role': 'user', 'content': json.dumps(view, allow_nan=False)}]
+                {'role': 'user', 'content': json.dumps(view, allow_nan=False) +
+                 '\nValid citation IDs: ' + ', '.join(aliases) + '. Cite only these IDs.'}]
     started = time.perf_counter()
-    try:
-        answer = p1.parse(model.complete(messages, [p1.SCHEMA]), aliases)
-        return {'answer': answer, 'input_view': view,
-                'visible_evidence_count': len(aliases),
-                'elapsed_s': round(time.perf_counter() - started, 3)}
-    except Exception as exc:
-        return {'error': type(exc).__name__, 'error_detail': str(exc)[:250],
-                'input_view': view, 'visible_evidence_count': len(aliases),
-                'elapsed_s': round(time.perf_counter() - started, 3)}
+    errors = []
+    for attempt in range(2):
+        try:
+            answer = p1.parse(model.complete(messages, [p1.SCHEMA]), aliases)
+            return {'answer': answer, 'input_view': view, 'attempts': attempt + 1,
+                    'visible_evidence_count': len(aliases),
+                    'elapsed_s': round(time.perf_counter() - started, 3)}
+        except Exception as exc:
+            errors.append(type(exc).__name__ + ': ' + str(exc)[:180])
+            messages.append({'role': 'user', 'content': 'The prior output was invalid: ' + errors[-1] +
+                             '. Submit one valid judge_transition action. Available IDs: ' +
+                             ', '.join(aliases) + '. You may use an empty evidence_ids list.'})
+    return {'error': 'ACTION_ERROR', 'error_detail': errors, 'input_view': view,
+            'attempts': 2, 'visible_evidence_count': len(aliases),
+            'elapsed_s': round(time.perf_counter() - started, 3)}
 
 
 def main():

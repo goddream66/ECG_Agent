@@ -21,18 +21,18 @@ class Model:
         self.messages, self.tools = messages, tools
         return type('Reply', (), {'message': {'tool_calls': [{
             'function': {'name': 'judge_transition', 'arguments': json.dumps({
-                'decision': 'UNCERTAIN', 'evidence_ids': ['P1'], 'reason': 'insufficient'})}}]}})()
+                'decision': 'UNCERTAIN', 'evidence_ids': ['E1'], 'reason': 'insufficient'})}}]}})()
 
 
 class P3Tests(unittest.TestCase):
     def setUp(self):
         self.case = {'record_id': 'x', 'cursor_s': 20, 'reference': 'negative',
-                     'primary': [{'id': 'P1', 'status': 'ok', 'window_s': [10, 20],
+                     'primary': [{'id': 'E1', 'status': 'ok', 'window_s': [10, 20],
                                   'source_evidence_id': 'real-primary'}],
-                     'backup': [{'id': 'B1', 'status': 'ok', 'window_s': [10, 20]}],
-                     'rr': [{'id': 'R1', 'status': 'insufficient'}],
-                     'quality': [{'id': 'Q1', 'status': 'ok'}],
-                     'wave': [{'id': 'W1', 'status': 'error'}]}
+                     'backup': [{'id': 'E7', 'status': 'ok', 'window_s': [10, 20]}],
+                     'rr': [{'id': 'E19', 'status': 'insufficient'}],
+                     'quality': [{'id': 'E13', 'status': 'ok'}],
+                     'wave': [{'id': 'E21', 'status': 'error'}]}
 
     def test_arms_add_only_requested_evidence(self):
         expected = {'A': {'cursor_s', 'primary_scores'},
