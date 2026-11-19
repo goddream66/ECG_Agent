@@ -33,7 +33,7 @@ raw 的 3 次无效输出不能算作正确持续判断。aligned 减少困难�
 
 ## P3-2：证据可判定性
 
-已生成 35 份截止判断时刻的双导联波形图、无真值的测量文件和盲审表。参考答案单独存放。盲审应分别记录：已有证据可判定、需要合法补测、需要等待未来窗口、现有工具无法判定，或波形本身仍不确定；同时写明可追溯的波形/测量依据。尚无独立审核结果，因此目前不能统计四类根因比例，也不能据此决定 SFT 或主动取证优先级。
+已生成 35 份截止判断时刻的双导联波形图、无真值的测量文件和盲审表。参考答案单独存放。盲审在 `review.csv` 中记录 `review_status=reviewed`、`decidability`、`waveform_judgment`、审核者及依据。`decidability` 可填 `existing_sufficient`（已有证据可判定）、`need_measurement`（需要合法补测）、`need_wait`（需要未来窗口）、`tools_insufficient`（现有工具不能判定）或 `indeterminate`（波形仍不确定）；`waveform_judgment` 可填 `AF_AFL_ONGOING / AF_AFL_ENDED / UNCERTAIN`。审核完成后由 `analyze_decidability_review.py` 解盲汇总，并分别报告与参考标注及三组 Qwen 判断的差异。尚无独立审核结果，因此目前不能统计根因比例，也不能据此决定 SFT 或主动取证优先级。
 
 ## 后续门槛
 
@@ -43,7 +43,7 @@ raw 的 3 次无效输出不能算作正确持续判断。aligned 减少困难�
 
 ## 复现位置
 
-- 代码：`ops/server/evidence_reasoning_p31.py`、`summarize_evidence_reasoning_p31.py`、`prepare_decidability_review.py`。
+- 代码：`ops/server/evidence_reasoning_p31.py`、`summarize_evidence_reasoning_p31.py`、`prepare_decidability_review.py`、`analyze_decidability_review.py`。
 - 服务器结果：`/data/1shared/gaojiajun/ECGagent/runs/afdb-evidence-reasoning-p31-end-20261119/`。
 - 盲审材料：结果目录下 `decidability_review/review.csv`、`blinded_evidence.jsonl`、`case-*.png`；答案在单独的 `answer_key.jsonl`。
 - 测试：服务器 207 项单元测试通过。

@@ -13,6 +13,7 @@ def build(cases, raw_root, output):
 
     output.mkdir(parents=True, exist_ok=True)
     fields = ('case_id', 'cursor_s', 'waveform_png', 'evidence_jsonl', 'review_status', 'decidability',
+              'waveform_judgment',
               'evidence_basis', 'reviewer', 'notes')
     with (output / 'review.csv').open('w', encoding='utf-8', newline='') as file, \
          (output / 'blinded_evidence.jsonl').open('w', encoding='utf-8') as evidence_file:
@@ -58,7 +59,8 @@ def build(cases, raw_root, output):
                 writer.writerow({'case_id': f'case-{index:03d}', 'cursor_s': cursor,
                                  'waveform_png': name, 'evidence_jsonl': 'blinded_evidence.jsonl',
                                  'review_status': 'pending',
-                                 'decidability': '', 'evidence_basis': '', 'reviewer': '', 'notes': ''})
+                                 'decidability': '', 'waveform_judgment': '',
+                                 'evidence_basis': '', 'reviewer': '', 'notes': ''})
     # This linkage contains the reference labels for analysis after blind review.
     with (output / 'answer_key.jsonl').open('w', encoding='utf-8') as file:
         index = 0
