@@ -160,7 +160,7 @@ class ReActReview:
             prompt = prompt + ('\nAfter measuring, use submit_event_decision as the sole final action. '
                 'KEEP_OPEN means evidence supports continuation; DEFER means the end is unresolved; '
                 'CLOSE requests termination only with local boundary evidence. For non-CLOSE, '
-                'event_id and end_s must be null. For CLOSE, cite the active event ID, actual '
+                'end_s must be null; event_id may name the current event. For CLOSE, cite the active event ID, actual '
                 'evidence IDs, and an estimated boundary distinct from decision time.\n')
             messages[0]['content'] = prompt
             tools.append({'type': 'function', 'function': {'name': 'submit_event_decision',
@@ -222,8 +222,10 @@ class ReActReview:
                                            for k in close.evidence_ids)):
                             raise ValueError('Close needs confirmed event and successful local boundary evidence')
                         self.pending_close = close.model_dump()
-                    elif submitted.event_id is not None or submitted.end_s is not None:
-                        raise ValueError('Non-close decision must omit event ID and end time')
+                    elif (submitted.end_s is not None or
+                          (submitted.event_id is not None and
+                           (tracker.active is None or submitted.event_id != tracker.active['event_id']))):
+                        raise ValueError('Non-close decision has end time or wrong event ID')
                     emit('llm_steps', dict(audit, status='decision_submitted',
                                            decision=submitted.decision,
                                            evidence_ids=submitted.evidence_ids))

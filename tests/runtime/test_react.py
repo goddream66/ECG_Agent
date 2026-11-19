@@ -313,7 +313,7 @@ class ReActTests(unittest.TestCase):
                 return super().complete(messages, tools)
 
         model = DecisionModel([reply('submit_event_decision', {
-            'decision': 'DEFER', 'event_id': None, 'end_s': None,
+            'decision': 'DEFER', 'event_id': 1, 'end_s': None,
             'evidence_ids': [], 'reason': 'end unresolved'})])
         review = ReActReview(model, max_rounds=1, boundary_tools=True, event_control=True,
                              unified_event_decision=True)
