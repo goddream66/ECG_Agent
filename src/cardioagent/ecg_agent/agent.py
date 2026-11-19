@@ -21,7 +21,9 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
                         *, policy='event-adaptive', raw_root=None, reviewer=None, rule_review=None, source_fs=SOURCE_FS):
     """The scorer is invoked only inside a requested current-window model tool."""
     event_control = policy == 'event-react' and getattr(reviewer, 'event_control', False)
-    tracker = EventTracker(config, llm_closure=event_control)
+    tracker = EventTracker(config, llm_closure=event_control,
+                           rule_safety_fallback=event_control and
+                           getattr(reviewer, 'rule_safety_fallback', False))
     if policy not in ('event-adaptive', 'legacy-dual', 'event-react'):
         raise ValueError('Unknown event policy')
     if policy == 'event-react' and reviewer is None:
@@ -168,6 +170,8 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
             logs.emit('event_updates', dict(deepcopy(observation), task_id=task['task_id']))
         logs.emit('window_trace', {'task_id': task['task_id'], 'start_s': start, 'end_s': cursor,
                                   'cursor_s': cursor, 'decision': decision, 'reason': reason, 'state': state,
+                                  'llm_action': deepcopy(reviewer.last_action)
+                                      if policy == 'event-react' and hasattr(reviewer, 'last_action') else None,
                                   'decision_threshold': decision_threshold,
                                   'af_score': primary['result'].get('af_score') if primary else None,
                                   'afl_score': primary['result'].get('afl_score') if primary else None,

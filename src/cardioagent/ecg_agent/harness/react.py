@@ -75,7 +75,8 @@ class EventDecision(BaseModel):
 class ReActReview:
     def __init__(self, model, *, max_rounds=5, history_windows=6, boundary_tools=False,
                  live_scoring=False, event_control=False, scheduled_evidence=False,
-                 unified_event_decision=False):
+                 unified_event_decision=False, separate_final_decision=False,
+                 rule_safety_fallback=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -84,13 +85,18 @@ class ReActReview:
             raise ValueError('Event control requires boundary tools')
         if unified_event_decision and not event_control:
             raise ValueError('Unified event decision requires event control')
+        if separate_final_decision and not unified_event_decision:
+            raise ValueError('Separated final decision requires unified event decision')
         self.model, self.max_rounds, self.history_windows = model, max_rounds, history_windows
         self.boundary_tools = boundary_tools
         self.live_scoring = boundary_tools and live_scoring
         self.event_control = event_control
         self.unified_event_decision = unified_event_decision
         self.scheduled_evidence = scheduled_evidence
+        self.separate_final_decision = separate_final_decision
+        self.rule_safety_fallback = rule_safety_fallback
         self.pending_close = None
+        self.last_action = None
         self.history = []
         self.identity = None
         self.counts = {'llm_calls': 0, 'llm_ms': 0., 'llm_prompt_tokens': 0,
@@ -99,6 +105,7 @@ class ReActReview:
     def review(self, call, primary, secondary, tracker, config, session, emit, *,
                call_window=None, seeded_decision=None):
         self.pending_close = None
+        self.last_action = None
         start, end = primary['window_s']
         c = session.evidence_context
         identity = {'run_id': c.run_id, 'task_id': c.task_id, 'record_id': c.record_id}
@@ -166,6 +173,14 @@ class ReActReview:
             tools.append({'type': 'function', 'function': {'name': 'submit_event_decision',
                 'description': 'Submit one explicit event-end decision and finish this review.',
                 'parameters': EventDecision.model_json_schema()}})
+            if self.separate_final_decision:
+                prompt += ('\nMeasurement phase: request a measurement or call finish_measurements. '
+                           'A separate final phase will always ask for exactly one event decision. '
+                           'Do not submit an event decision during measurement.\n')
+                messages[0]['content'] = prompt
+                tools.append({'type': 'function', 'function': {'name': 'finish_measurements',
+                    'description': 'Finish measurements now and proceed to the separate mandatory decision phase.',
+                    'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False}}})
         else:
             tools.append({'type': 'function', 'function': {'name': 'keep_event_open' if self.event_control else 'finish_review',
                       'description': ('End this window review while leaving the confirmed event open. '
@@ -179,15 +194,40 @@ class ReActReview:
                           'parameters': CloseEvent.model_json_schema()}})
         stop = 'round_limit'
         failed = False
-        for step in range(self.max_rounds):
+        measurement_done = False
+        decision_retries = 0
+        aliases = {}
+        final_context_added = False
+        total_rounds = self.max_rounds + (1 if self.separate_final_decision else 0)
+        for step in range(total_rounds):
+            final_phase = self.separate_final_decision and (measurement_done or step >= self.max_rounds - 1)
+            if self.separate_final_decision and not final_phase and len(session.calls) >= session.max_calls:
+                measurement_done = True
+                final_phase = True
+            if final_phase and not final_context_added:
+                aliases = {f'E{i}': row['evidence_id'] for i, row in enumerate(session.calls, 1)}
+                messages.append({'role': 'user', 'content': json.dumps({
+                    'phase': 'final_decision',
+                    'evidence_aliases': [{
+                        'id': alias, 'tool': row['tool'], 'lead': row['lead'],
+                        'window_s': row['window_s'], 'status': row['status'],
+                        'result': row['result']}
+                        for alias, row in zip(aliases, session.calls)],
+                    'instruction': 'Submit one decision. You may cite these short IDs; '
+                                   'the runtime resolves them to immutable evidence IDs.'}, allow_nan=False)})
+                final_context_added = True
             began = perf_counter()
             audit = dict(identity, cursor_s=end, step=step)
             self.counts['llm_calls'] += 1
             try:
                 try:
-                    available_tools = ([t for t in tools if t['function']['name'] == 'submit_event_decision']
-                                       if self.unified_event_decision and step == self.max_rounds - 1
-                                       else tools)
+                    if self.separate_final_decision:
+                        available_tools = [t for t in tools if
+                            (t['function']['name'] == 'submit_event_decision') == final_phase]
+                    else:
+                        available_tools = ([t for t in tools if t['function']['name'] == 'submit_event_decision']
+                                           if self.unified_event_decision and step == self.max_rounds - 1
+                                           else tools)
                     reply = self.model.complete(deepcopy(messages), deepcopy(available_tools))
                 finally:
                     self.counts['llm_ms'] += (perf_counter() - began) * 1000
@@ -200,12 +240,23 @@ class ReActReview:
                 if msg.get('role') != 'assistant' or len(calls) != 1:
                     raise ValueError('Exactly one assistant tool call required')
                 fn = calls[0]['function']; name = fn['name']
+                if self.separate_final_decision and name not in {
+                        t['function']['name'] for t in available_tools}:
+                    raise ValueError('Tool is not available in this phase')
                 args = json.loads(fn['arguments']) if isinstance(fn['arguments'], str) else fn['arguments']
                 if not isinstance(args, dict):
                     raise ValueError('Tool arguments must be an object')
                 audit = dict(identity, cursor_s=end, step=step, action=name, arguments=deepcopy(args))
+                if name == 'finish_measurements' and self.separate_final_decision:
+                    if args:
+                        raise ValueError('finish_measurements takes no arguments')
+                    emit('llm_steps', dict(audit, status='measurements_finished'))
+                    measurement_done = True
+                    continue
                 if name == 'submit_event_decision' and self.unified_event_decision:
                     submitted = EventDecision.model_validate(args)
+                    if aliases:
+                        submitted.evidence_ids = [aliases.get(key, key) for key in submitted.evidence_ids]
                     known = {r['evidence_id']: r for r in session.calls}
                     visible_history = {evidence_id for window in self.history
                                        for evidence_id in window['evidence_ids']}
@@ -233,6 +284,8 @@ class ReActReview:
                     emit('llm_steps', dict(audit, status='decision_submitted',
                                            decision=submitted.decision,
                                            evidence_ids=submitted.evidence_ids))
+                    self.last_action = {'decision': submitted.decision, 'reason': submitted.reason,
+                                        'evidence_ids': list(submitted.evidence_ids)}
                     stop = 'model_decision_' + submitted.decision.lower()
                     break
                 if name == 'end_confirmed_event' and self.event_control:
@@ -295,20 +348,43 @@ class ReActReview:
                 messages.append({'role': 'user', 'content': json.dumps({
                     'remaining_tool_calls': session.max_calls - len(session.calls)})})
             except Exception as exc:
-                # No invented fallback diagnosis on backend/schema/timeout failure.
+                emit('llm_steps', dict(audit, status='error', error_type=type(exc).__name__,
+                                       error_message=str(exc)[:500]))
+                if self.separate_final_decision:
+                    if not final_phase:
+                        measurement_done = True
+                        messages.append({'role': 'user', 'content':
+                            'Measurement failed. Proceed to final decision using only available evidence.'})
+                        continue
+                    decision_retries += 1
+                    if decision_retries <= 1:
+                        messages.append({'role': 'user', 'content':
+                            'Final action rejected: ' + str(exc)[:500] +
+                            '. Retry exactly once with submit_event_decision. '
+                            'For KEEP_OPEN or DEFER set end_s to null; cite only available evidence IDs.'})
+                        continue
+                    stop, failed = 'ACTION_ERROR', True
+                    self.last_action = {'decision': 'ACTION_ERROR', 'reason': str(exc)[:500],
+                                        'evidence_ids': []}
+                    break
+                # Preserve the original policy's failure semantics for paired comparison.
                 stop, failed = 'model_or_action_error', True
-                emit('llm_steps', dict(audit, status='error', error_type=type(exc).__name__))
                 break
+        if self.separate_final_decision and self.last_action is None:
+            stop, failed = 'ACTION_ERROR', True
+            self.last_action = {'decision': 'ACTION_ERROR',
+                                'reason': 'No valid final event decision', 'evidence_ids': []}
         acquired = {(r['tool'], r['lead']): deepcopy(r) for r in session.calls
                     if r['window_s'] == [start, end]}
         def existing(tool, lead):
             return deepcopy(acquired.get((tool, lead)))
-        if failed:
+        if failed and not self.separate_final_decision:
             decision = ('unavailable', False, stop)
         else:
             decision = decide_event(existing, primary, secondary, tracker, config)
         emit('llm_steps', dict(identity, cursor_s=end, status='review_complete', stop_reason=stop,
                               decision=decision[0], interpreter_reason=decision[2],
+                              llm_action=deepcopy(self.last_action),
                               remaining_tool_calls=session.max_calls-len(session.calls)))
         acquired_summary = []
         for result in session.calls:

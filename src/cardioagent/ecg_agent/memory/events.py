@@ -4,10 +4,11 @@ import math
 from cardioagent.ecg_agent.policies.event_rules import EventConfig, EventRules
 
 class EventTracker:
-    def __init__(self, config=None, *, llm_closure=False):
+    def __init__(self, config=None, *, llm_closure=False, rule_safety_fallback=False):
         self.config = config or EventConfig()
         self.rules = EventRules(self.config)
         self.llm_closure = llm_closure
+        self.rule_safety_fallback = rule_safety_fallback
         self.state = 'IDLE'
         self.events = []
         self.active = None
@@ -106,12 +107,16 @@ class EventTracker:
                         self.negative_start = start
                     self.negative_count += 1
                     self.state = 'PENDING_END'
-                    if not self.llm_closure and self.rules.ends(self.negative_count):
+                    if ((not self.llm_closure or self.rule_safety_fallback)
+                            and close_request is None and self.rules.ends(self.negative_count)):
                         event['estimated_end_s'] = self.negative_start
                         event['end_decided_at_s'] = end
                         # Last support is never extended into unobserved/unknown end evidence.
                         closed_id = event['event_id']
-                        self._close('confirmed_end', end)
+                        source = 'rule_safety_close' if self.llm_closure else 'confirmed_end'
+                        update = {'kind': source, 'estimated_end_s': self.negative_start,
+                                  'recorded_at_s': end, 'evidence_ids': list(evidence_ids)}
+                        self._close(source, end)
             else:
                 self.support_count = self.negative_count = 0
                 self.negative_start = None
@@ -119,10 +124,15 @@ class EventTracker:
                     self.unknown_start = start
                 event['unknown_intervals'].append([start, end])
                 self.state = 'UNKNOWN_HOLD'
-                if self.rules.unknown_expired(self.unknown_start, end) and (
-                        event['confirmed_at_s'] is None or not self.llm_closure):
+                if close_request is None and self.rules.unknown_expired(self.unknown_start, end) and (
+                        event['confirmed_at_s'] is None or not self.llm_closure or self.rule_safety_fallback):
                     closed_id = event['event_id']
-                    self._close('unknown_timeout' if event['confirmed_at_s'] is not None else 'candidate_timeout', end)
+                    source = ('rule_safety_unknown_timeout' if self.llm_closure and
+                              event['confirmed_at_s'] is not None else
+                              'unknown_timeout' if event['confirmed_at_s'] is not None else 'candidate_timeout')
+                    update = {'kind': source, 'recorded_at_s': end,
+                              'evidence_ids': list(evidence_ids)}
+                    self._close(source, end)
         if close_request is not None:
             if not self.llm_closure:
                 raise ValueError('LLM closure is not enabled')

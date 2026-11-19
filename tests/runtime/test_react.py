@@ -373,6 +373,73 @@ class ReActTests(unittest.TestCase):
                         close_request=review.pending_close)
         self.assertEqual(tracker.intervals, [[0, 22.35]])
 
+    def test_separate_decision_retries_and_resolves_short_evidence_id(self):
+        class DecisionModel(ScriptModel):
+            def complete(self, messages, tools):
+                self.tool_sets = getattr(self, 'tool_sets', [])
+                self.tool_sets.append([t['function']['name'] for t in tools])
+                return super().complete(messages, tools)
+
+        model = DecisionModel([
+            reply('finish_measurements', {}),
+            reply('submit_event_decision', {'decision': 'DEFER', 'event_id': None,
+                  'end_s': 10., 'evidence_ids': ['E1'], 'reason': 'uncertain'}),
+            reply('submit_event_decision', {'decision': 'DEFER', 'event_id': None,
+                  'end_s': None, 'evidence_ids': ['E1'], 'reason': 'uncertain'}),
+        ])
+        review = ReActReview(model, boundary_tools=True, event_control=True,
+                             unified_event_decision=True, separate_final_decision=True)
+        t = np.arange(2500) / 250
+        wave = Waveform(np.column_stack([np.sin(2*np.pi*8*t)]*2), 250,
+                        ('ECG1','ECG2'), ('mV','mV'))
+        session = ToolSession(ToolContext(wave, 0, 10), allow_experimental=True,
+                              cached_model=lambda *_: (np.ones(5000), lambda _:(.9,.1)),
+                              evidence_context=EvidenceContext('run','task','record'))
+        primary = session.call('score_ecgfounder', {'lead':'ECG1','start_s':0.,'end_s':10.})
+        logs=[]
+        review.review(lambda *_: None, primary, 'ECG2', EventTracker(llm_closure=True),
+                      EventConfig(), session, lambda _,row: logs.append(row),
+                      call_window=session.call)
+        self.assertEqual(review.counts['llm_calls'], 3)
+        self.assertEqual(model.tool_sets[1], ['submit_event_decision'])
+        self.assertEqual(model.tool_sets[2], ['submit_event_decision'])
+        self.assertEqual(review.last_action['decision'], 'DEFER')
+        self.assertEqual(review.last_action['evidence_ids'], [primary['evidence_id']])
+        self.assertEqual(logs[-1]['stop_reason'], 'model_decision_defer')
+
+    def test_separate_decision_failure_is_action_error(self):
+        model = ScriptModel([reply('finish_measurements', {}),
+            reply('submit_event_decision', {'decision':'DEFER', 'event_id':None,
+                  'end_s':10., 'evidence_ids':[], 'reason':'invalid'}),
+            reply('submit_event_decision', {'decision':'DEFER', 'event_id':None,
+                  'end_s':10., 'evidence_ids':[], 'reason':'invalid'})])
+        review = ReActReview(model, boundary_tools=True, event_control=True,
+                             unified_event_decision=True, separate_final_decision=True)
+        t=np.arange(2500)/250
+        wave=Waveform(np.column_stack([np.sin(2*np.pi*8*t)]*2),250,
+                      ('ECG1','ECG2'),('mV','mV'))
+        session=ToolSession(ToolContext(wave,0,10),allow_experimental=True,
+                            cached_model=lambda *_:(np.ones(5000),lambda _:(.9,.1)),
+                            evidence_context=EvidenceContext('run','task','record'))
+        primary=session.call('score_ecgfounder',{'lead':'ECG1','start_s':0.,'end_s':10.})
+        logs=[]
+        review.review(lambda *_:None,primary,'ECG2',EventTracker(llm_closure=True),
+                      EventConfig(),session,lambda _,row:logs.append(row),call_window=session.call)
+        self.assertEqual(review.last_action['decision'],'ACTION_ERROR')
+        self.assertEqual(logs[-1]['stop_reason'],'ACTION_ERROR')
+
+    def test_rule_safety_closure_is_attributed_separately(self):
+        for fallback, expected in ((False,None),(True,'rule_safety_close')):
+            tracker=EventTracker(EventConfig(),llm_closure=True,rule_safety_fallback=fallback)
+            tracker.observe(0,10,'support')
+            tracker.observe(10,20,'support')
+            tracker.observe(20,30,'negative')
+            update=tracker.observe(30,40,'negative',evidence_ids=['counter'])
+            self.assertEqual(tracker.events[0]['termination_reason'],expected)
+            if fallback:
+                self.assertEqual(update['event_update']['kind'],'rule_safety_close')
+                self.assertEqual(update['event_update']['evidence_ids'],['counter'])
+
     def test_record_runner_applies_model_close_to_saved_prediction(self):
         from tests.runtime.test_event_checkpoints import EventCheckpointTests
         from cardioagent.ecg_agent.experiments.runner import run_job
