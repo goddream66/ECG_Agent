@@ -52,6 +52,11 @@ def make_view(cursor, trace, evidence, arm):
 
 def decide(model, cursor, trace, evidence, arm):
     view = make_view(cursor, trace, evidence, arm)
+    aliases = {}
+    for index, item in enumerate(view['measured_evidence'], 1):
+        alias = f'E{index}'
+        aliases[alias] = item['evidence_id']
+        item['evidence_id'] = alias
     system = ('A confirmed AF/AFL event is active. Signal arrives online. Use only supplied '
               'measurements; low model scores are not definitive rhythm diagnoses. '
               'Decision time and estimated boundary are different. Cite real evidence IDs. ')
@@ -70,8 +75,8 @@ def decide(model, cursor, trace, evidence, arm):
     messages = [{'role': 'system', 'content': system},
                 {'role': 'user', 'content': json.dumps(view, allow_nan=False)}]
     began = time.perf_counter()
-    row = {'cursor_s': cursor, 'arm': arm, 'input_evidence_ids':
-           [e['evidence_id'] for e in view['measured_evidence']]}
+    row = {'cursor_s': cursor, 'arm': arm, 'evidence_aliases': aliases,
+           'input_evidence_ids': list(aliases)}
     try:
         model.last_raw = None
         reply = model.complete(messages, tools)
@@ -87,6 +92,7 @@ def decide(model, cursor, trace, evidence, arm):
             raise ValueError('invalid_arguments')
         if not set(args['evidence_ids']) <= set(row['input_evidence_ids']):
             raise ValueError('unavailable_evidence_id')
+        row['resolved_evidence_ids'] = [aliases[k] for k in args['evidence_ids']]
         if fn['name'] == 'submit_event_decision':
             if args.get('decision') not in ('KEEP_OPEN', 'CLOSE', 'DEFER'):
                 raise ValueError('invalid_decision')
