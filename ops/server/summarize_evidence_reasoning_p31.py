@@ -23,6 +23,8 @@ def summarize(directory, cases, output):
     arms = {arm: {} for arm in ARMS}
     variants = {}
     for path in directory.glob('*.jsonl'):
+        if not path.name.startswith(('main-', 'hard-')):
+            continue
         for row in read(path):
             if row['arm'] in arms:
                 arms[row['arm']][key(row)] = row
