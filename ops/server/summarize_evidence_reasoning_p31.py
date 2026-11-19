@@ -18,7 +18,7 @@ def key(row):
 
 
 def summarize(directory, cases, output):
-    baseline = {key(x): x for group in ('main', 'hard')
+    baseline = {key({**x, 'group': group}): x for group in ('main', 'hard')
                 for x in read(cases / group / 'cases.jsonl')}
     arms = {arm: {} for arm in ARMS}
     variants = {}
