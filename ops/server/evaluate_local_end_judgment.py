@@ -43,8 +43,7 @@ def prompt_for(cursor, trace, evidence):
     selected = [evidence_view(row) for row in evidence
                 if first <= row['window_s'][0] and row['available_at_s'] <= cursor]
     return {'cursor_s': cursor, 'recent_windows': [
-        {key: row.get(key) for key in ('start_s', 'end_s', 'decision', 'reason', 'state',
-                                        'af_score', 'afl_score', 'evidence_ids')}
+        {key: row.get(key) for key in ('start_s', 'end_s', 'af_score', 'afl_score')}
         for row in history], 'measured_evidence': selected}
 
 
