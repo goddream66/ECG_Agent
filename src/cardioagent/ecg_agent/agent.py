@@ -2,6 +2,7 @@
 from collections import Counter
 from copy import deepcopy
 from hashlib import sha256
+from math import ceil
 from pathlib import Path
 from time import perf_counter
 import numpy as np
@@ -14,11 +15,13 @@ from cardioagent.ecg_agent.policies.rule_review import decide_event
 from cardioagent.ecg_agent.policies.baselines import EventMemory, decide
 from cardioagent.ecg_agent.harness import ToolContext, ToolSession
 from cardioagent.ecg_agent.data.afdb import CHANNELS, SOURCE_FS, _arrivals
+from cardioagent.ecg_agent.data.preprocessing import invalid_spans, preprocess_window
 
 def replay_event_record(cache, record, task, channel, config, score, logs, context,
                         *, policy='event-adaptive', raw_root=None, reviewer=None, rule_review=None, source_fs=SOURCE_FS):
     """The scorer is invoked only inside a requested current-window model tool."""
-    tracker = EventTracker(config)
+    event_control = policy == 'event-react' and getattr(reviewer, 'event_control', False)
+    tracker = EventTracker(config, llm_closure=event_control)
     if policy not in ('event-adaptive', 'legacy-dual', 'event-react'):
         raise ValueError('Unknown event policy')
     if policy == 'event-react' and reviewer is None:
@@ -39,6 +42,8 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
         if raw.fs != source_fs or tuple(raw.sig_name) != CHANNELS or raw.sig_len != record['source_record_samples']:
             raise ValueError('Raw data/cache coordinates disagree')
     secondary = next(x for x in CHANNELS if x != channel)
+    boundary_review = policy == 'event-react' and getattr(reviewer, 'boundary_tools', False)
+    retained_samples = 120 * source_fs
     cursor = float(task['start_s'])
     for block in _arrivals(Path(cache), record, CHANNELS, task['start_s'], task['end_s'], source_fs=source_fs):
         row = block[channel][0]
@@ -50,8 +55,13 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
         if row['status'] == 'incomplete':
             decision, checked, reason = 'unavailable', False, 'incomplete_window'
         else:
+            origin = start
             if raw is not None:
-                w = Waveform(raw.p_signal[row['start_sample']:row['end_sample']], source_fs,
+                first = row['start_sample']
+                if boundary_review:
+                    first = max(ceil(task['start_s'] * source_fs - 1e-8), row['end_sample'] - retained_samples)
+                    origin = first / source_fs
+                w = Waveform(raw.p_signal[first:row['end_sample']], source_fs,
                              CHANNELS, tuple(raw.units))
             else:
                 values = np.full((5000, 2), np.nan, dtype=np.float32)
@@ -61,15 +71,21 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
                 w = Waveform(values, 500, CHANNELS, ('normalized', 'normalized'))
 
             def model_window(lead, a, b):
-                if (a, b) != (start, cursor):
+                if (a, b) == (start, cursor):
+                    selected, values = block[lead]
+                    return values, lambda x: score(lead, x, selected['waveform_row'])
+                if not boundary_review or not reviewer.live_scoring:
                     return None, lambda _: None
-                selected, values = block[lead]
-                return values, lambda x: score(lead, x, selected['waveform_row'])
+                values = w.window(lead, a-origin, b-origin)
+                if len(values) != 10 * source_fs or invalid_spans(values, source_fs):
+                    return None, lambda _: None
+                return preprocess_window(values, source_fs), lambda x: score(lead, x, None)
 
-            session = ToolSession(ToolContext(w, start, cursor), max_calls=1 + config.review_budget,
-                                  cached_model=model_window, evidence_context=context)
+            session = ToolSession(ToolContext(w, origin, cursor), max_calls=1 + config.review_budget,
+                                  cached_model=model_window, evidence_context=context, allow_experimental=boundary_review)
 
-            def call(tool, lead):
+            def call_window(tool, args):
+                lead, a, b = args['lead'], args['start_s'], args['end_s']
                 if policy == 'event-react' and primary is not None:
                     trigger = 'llm_review_request'
                 elif primary is None:
@@ -89,8 +105,8 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
                     trigger = 'resolve_' + tracker.state.lower()
                 else:
                     trigger = 'periodic_review'
-                result = session.call(tool, {'lead': lead, 'start_s': start, 'end_s': cursor})
-                fingerprint = sha256(f'{context.manifest_id}:{context.record_id}:{start}:{cursor}:{lead}:{tool}'.encode()).hexdigest()
+                result = session.call(tool, args)
+                fingerprint = sha256(f'{context.manifest_id}:{context.record_id}:{a}:{b}:{lead}:{tool}'.encode()).hexdigest()
                 enriched = ledger.append(result, source_evidence_id=session.cache_sources.get(result['evidence_id']),
                                          input_fingerprint=fingerprint)
                 logs.emit('evidence', enriched)
@@ -99,13 +115,17 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
                                           'remaining_calls': session.max_calls - len(session.calls)})
                 return result
 
+            def call(tool, lead):
+                return call_window(tool, {'lead': lead, 'start_s': start, 'end_s': cursor})
+
             primary = call('score_ecgfounder', channel)
             if legacy is not None:
                 decision, checked, reason = decide(call, primary, secondary, config.threshold,
                                                    legacy, 'dual', config.review_budget)
             elif policy == 'event-react':
                 decision, checked, reason = reviewer.review(call, primary, secondary, tracker, config,
-                                                            session, logs.emit)
+                                                            session, logs.emit,
+                                                            **({'call_window': call_window} if boundary_review else {}))
             else:
                 review = rule_review if rule_review is not None else decide_event
                 decision, checked, reason = review(call, primary, secondary, tracker, config)
@@ -128,7 +148,8 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
             observation = legacy.observe(start, cursor, decision, checked, evidence_ids)
             state = (observation or {}).get('state', 'idle')
         else:
-            observation = tracker.observe(start, cursor, decision, checked, evidence_ids)
+            observation = tracker.observe(start, cursor, decision, checked, evidence_ids,
+                                          close_request=reviewer.pending_close if event_control and primary else None)
             state = tracker.state
         if observation is not None:
             logs.emit('event_updates', dict(deepcopy(observation), task_id=task['task_id']))

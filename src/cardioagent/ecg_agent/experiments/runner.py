@@ -74,7 +74,10 @@ def run_job(job):
                 load_began = perf_counter()
                 reviewer = ReActReview(build_chat_model(job['llm']),
                     max_rounds=job['llm'].get('max_rounds', 5),
-                    history_windows=job['llm'].get('history_windows', 6))
+                    history_windows=job['llm'].get('history_windows', 6),
+                    boundary_tools=job['llm'].get('boundary_tools', False),
+                    event_control=job['llm'].get('event_control', False),
+                    live_scoring=job['mode'] == 'live')
                 llm_load_ms = (perf_counter() - load_began) * 1000
             if job['mode'] == 'fixed':
                 with Path(job['source_trace']).open(encoding='utf-8') as stream:

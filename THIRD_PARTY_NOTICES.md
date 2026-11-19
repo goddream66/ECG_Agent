@@ -25,6 +25,8 @@ coarse profile and P/QRS/ST/T/QT measurement ideas and algorithms. It replaces
 whole-record cached detection with elapsed-window tools, preserves original RR,
 returns missing measurements as null, and explicitly names approximate outputs
 as experimental proxies. Annotation-reading diagnostic tools were not copied.
+Its beat timeline combines these adapted local RR, P and QRS measurements at
+each detected R-peak timestamp for event-boundary review.
 No source data or pretrained weights were copied.
 See third_party/ecg_scroll_source.json for the exact local source hash and commit.
 

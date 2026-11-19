@@ -11,8 +11,9 @@ def _beats(session,args):
     key=(args.lead,args.start_s,args.end_s)
     if key not in session.internal_cache:
         import cardioagent.ecg_agent.tools.algorithms as legacy
+        start, end = session.sampled_window(args)
         session.internal_cache[key]=legacy.measure(session.window(args),session.context.waveform.fs,
-                                                   args.start_s,args.start_s,args.end_s)
+                                                   start,start,end)
     return session.internal_cache[key]
 
 
@@ -25,8 +26,9 @@ def quality(session,args):
 def beats(session,args):
     # Preserve existing per-chunk rate semantics, including bounded lookback RR.
     import cardioagent.ecg_agent.tools.algorithms as legacy
-    data=legacy.measure(session.window(args),session.context.waveform.fs,args.start_s,
-                        args.commit_start_s if args.commit_start_s is not None else args.start_s,args.end_s)
+    start, end = session.sampled_window(args)
+    data=legacy.measure(session.window(args),session.context.waveform.fs,start,
+                        args.commit_start_s if args.commit_start_s is not None else start,end)
     return data, ('error' if data['detector_error'] else 'ok' if data['rate_bpm'] is not None else 'insufficient'), []
 
 
@@ -88,7 +90,8 @@ def _mv(session,args):
     if not np.isfinite(values).all() or np.ptp(values)<=1e-10:
         raise ValueError('Morphology requires finite, non-flat ECG')
     times=np.array(_beats(session,args)['r_peaks_s'])
-    indices=np.rint((times-args.start_s)*wave.fs).astype(int)
+    start, _ = session.sampled_window(args)
+    indices=np.rint((times-start)*wave.fs).astype(int)
     return values,wave.fs,times,indices
 
 
@@ -99,12 +102,13 @@ def _output(values,summary,assumptions):
 
 def p_wave(session,args):
     x,fs,times,indices=_mv(session,args); rows=[]
+    start, _ = session.sampled_window(args)
     lo,hi,base=max(1,round(.25*fs)),max(1,round(.05*fs)),max(1,round(.02*fs))
     for time,r in zip(times,indices):
         a,b=r-lo,r-hi
         if a<base or b<=a:continue
         dev=x[a:b]-np.median(x[a-base:a]); j=int(np.argmax(abs(dev)))
-        rows.append({'r_time_s':float(time),'p_candidate_time_s':float(args.start_s+(a+j)/fs),
+        rows.append({'r_time_s':float(time),'p_candidate_time_s':float(start+(a+j)/fs),
                      'p_peak_to_r_peak_ms':float((r-a-j)/fs*1000),'amplitude_mv':float(dev[j])})
     return _output({'beats':rows,'measured_beats':len(rows)},
                    {'p_candidate_fraction':float(np.mean([abs(r['amplitude_mv'])>.05 for r in rows])) if rows else None},
@@ -123,6 +127,36 @@ def qrs(session,args):
                    ['Threshold occupancy is not QRS onset-to-offset duration; no PVC classification'])
 
 
+def beat_timeline(session, args):
+    """Join ECG-Scroll-style local RR, P and QRS evidence on detected R timestamps."""
+    measured = _beats(session, args)
+    times = measured['r_peaks_s']
+    rows = []
+    details = {'sampled_window_s': session.sampled_window(args), 'detected_beats': len(times), 'beats': rows}
+    if measured['detector_error']:
+        return {**details, 'detector_error': measured['detector_error']}, 'error', []
+    warnings = [
+        'Experimental waveform proxy; use surrounding beats to review a possible rhythm transition',
+        'Atrial deflection candidates and QRS occupancy do not establish rhythm type or an AF end',
+    ]
+    if len(times) < 2:
+        return details, 'insufficient', warnings
+
+    p_by_r = {row['r_time_s']: row for row in p_wave(session, args)[0]['beats']}
+    qrs_by_r = {row['r_time_s']: row for row in qrs(session, args)[0]['beats']}
+    for index, time in enumerate(times):
+        p = p_by_r.get(time)
+        qrs_sample = qrs_by_r.get(time)
+        rows.append({
+            'r_time_s': time,
+            'rr_from_previous_ms': None if index == 0 else (time - times[index - 1]) * 1000,
+            'p_candidate_time_s': p['p_candidate_time_s'] if p else None,
+            'p_candidate_amplitude_mv': p['amplitude_mv'] if p else None,
+            'qrs_suprathreshold_occupancy_ms': qrs_sample['suprathreshold_occupancy_ms'] if qrs_sample else None,
+        })
+    return details, 'ok', warnings
+
+
 def st(session,args):
     x,fs,times,indices=_mv(session,args); before=round(.04*fs); after=round(.12*fs); rows=[]
     for time,r in zip(times,indices):
@@ -135,11 +169,12 @@ def st(session,args):
 
 def t_wave(session,args):
     x,fs,times,indices=_mv(session,args); rows=[]
+    start, _ = session.sampled_window(args)
     for time,r in zip(times,indices):
         a,b=r+round(.15*fs),r+round(.40*fs); base=r-round(.04*fs)
         if base<0 or b>=len(x) or b<=a:continue
         dev=x[a:b]-x[base]; j=int(np.argmax(abs(dev)))
-        rows.append({'r_time_s':float(time),'t_candidate_time_s':float(args.start_s+(a+j)/fs),'amplitude_mv':float(dev[j])})
+        rows.append({'r_time_s':float(time),'t_candidate_time_s':float(start+(a+j)/fs),'amplitude_mv':float(dev[j])})
     return _output({'beats':rows,'measured_beats':len(rows)},
                    {'mean_amplitude_mv':float(np.mean([r['amplitude_mv'] for r in rows])) if rows else None},
                    ['Fixed R+150..400 ms search; no validated T-wave delineation'])

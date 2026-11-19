@@ -6,7 +6,7 @@ from uuid import uuid4
 from time import perf_counter
 from pydantic import ValidationError
 from cardioagent.ecg_agent.schemas import ToolContext, ToolResult
-from cardioagent.common.recording import Waveform
+from cardioagent.common.recording import Waveform, sample_span
 
 
 class ToolRegistry:
@@ -53,6 +53,12 @@ class ToolSession:
     def window(self, args):
         c = self.context
         return c.waveform.window(args.lead, args.start_s-c.origin_s, args.end_s-c.origin_s)
+
+    def sampled_window(self, args):
+        """Actual half-open sample span used by window(), in absolute seconds."""
+        c = self.context
+        first, last = sample_span(c.waveform.fs, len(c.waveform.values), c.origin_s, args.start_s, args.end_s)
+        return [c.origin_s + first / c.waveform.fs, c.origin_s + last / c.waveform.fs]
 
     def call(self, name, arguments):
         began=perf_counter(); c=self.context

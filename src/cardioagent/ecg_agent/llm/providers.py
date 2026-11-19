@@ -79,6 +79,8 @@ def build_chat_model(config):
     provider = c.pop('provider')
     c.pop('max_rounds', None)
     c.pop('history_windows', None)
+    c.pop('boundary_tools', None)
+    c.pop('event_control', None)
     key = json.dumps([provider, c], sort_keys=True)
     if provider == 'openai-compatible':
         return EndpointModel(c)

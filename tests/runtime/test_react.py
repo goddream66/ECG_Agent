@@ -180,6 +180,192 @@ class ReActTests(unittest.TestCase):
             self.assertTrue(all(x['lead']=='ECG1' for x in evidence))
             self.assertEqual(len({x['evidence_id'] for x in evidence}),4)
 
+    def test_boundary_mode_executes_fractional_lookback_and_logs_end_proposal(self):
+        from tests.runtime.test_ecg_toolkit import measured
+
+        class BoundaryModel:
+            def complete(self, messages, tools):
+                state = json.loads(messages[1]['content'])
+                assert state['retained_window_s'] == [0, 30]
+                results = [json.loads(m['content']) for m in messages if m['role'] == 'tool']
+                if not results:
+                    return reply('get_beat_timeline_proxy', {'lead': 'ECG2', 'start_s': 18.25, 'end_s': 25.40})
+                return reply('finish_review', {'reason': 'local transition cue', 'proposed_end_s': 22.35,
+                                               'evidence_ids': [results[0]['evidence_id']]})
+
+        review = ReActReview(BoundaryModel(), boundary_tools=True)
+        tracker = EventTracker()
+        tracker.observe(0, 10, 'support')
+        tracker.observe(10, 20, 'support')
+        t = np.arange(7500) / 250
+        wave = Waveform(np.column_stack([np.sin(2*np.pi*8*t)]*2), 250, ('ECG1','ECG2'), ('mV','mV'))
+        session = ToolSession(ToolContext(wave, 0, 30), allow_experimental=True,
+                              cached_model=lambda *_: (np.ones(5000, dtype=np.float32), lambda _: (.9,.1)),
+                              evidence_context=EvidenceContext('run','task','record1'))
+        primary = session.call('score_ecgfounder', {'lead':'ECG1','start_s':20.,'end_s':30.})
+        logs = []
+        with patch('cardioagent.ecg_agent.tools.algorithms.measure', side_effect=measured):
+            review.review(lambda *_: self.fail('Expected window callback'), primary, 'ECG2', tracker,
+                          EventConfig(), session, lambda _, row: logs.append(row), call_window=session.call)
+        result = session.calls[1]
+        self.assertEqual(result['window_s'], [18.25, 25.40])
+        self.assertEqual(result['status'], 'ok')
+        proposal = next(row for row in logs if 'proposed_end_s' in row)
+        self.assertEqual(proposal['proposed_end_s'], 22.35)
+        self.assertEqual(proposal['cursor_s'], 30.)
+        self.assertEqual(proposal['evidence_ids'], [result['evidence_id']])
+        self.assertEqual(tracker.state, 'ACTIVE')
+
+    def test_qwen_close_event_changes_reported_interval(self):
+        from tests.runtime.test_ecg_toolkit import measured
+
+        class ClosingModel:
+            def complete(self, messages, tools):
+                names = {tool['function']['name'] for tool in tools}
+                assert 'close_event' in names
+                results = [json.loads(m['content']) for m in messages if m['role'] == 'tool']
+                if not results:
+                    return reply('get_beat_timeline_proxy', {
+                        'lead': 'ECG2', 'start_s': 18.25, 'end_s': 25.40})
+                return reply('close_event', {'event_id': 1, 'end_s': 22.35,
+                                             'evidence_ids': [results[0]['evidence_id']],
+                                             'reason': 'locally reviewed rhythm transition'})
+
+        review = ReActReview(ClosingModel(), boundary_tools=True, event_control=True)
+        tracker = EventTracker(llm_closure=True)
+        tracker.observe(0, 10, 'support')
+        tracker.observe(10, 20, 'support')
+        t = np.arange(7500) / 250
+        wave = Waveform(np.column_stack([np.sin(2*np.pi*8*t)]*2), 250,
+                        ('ECG1','ECG2'), ('mV','mV'))
+        session = ToolSession(ToolContext(wave, 0, 30), allow_experimental=True,
+                              cached_model=lambda *_: (np.ones(5000, dtype=np.float32),
+                                                       lambda _: (.9,.1)),
+                              evidence_context=EvidenceContext('run','task','record1'))
+        primary = session.call('score_ecgfounder', {'lead':'ECG1','start_s':20.,'end_s':30.})
+        logs = []
+        with patch('cardioagent.ecg_agent.tools.algorithms.measure', side_effect=measured):
+            decision = review.review(lambda *_: self.fail('Expected window callback'), primary,
+                                     'ECG2', tracker, EventConfig(), session,
+                                     lambda _, row: logs.append(row), call_window=session.call)
+        self.assertEqual(review.pending_close['end_s'], 22.35)
+        self.assertEqual(logs[-1]['stop_reason'], 'model_close_event')
+        observation = tracker.observe(20, 30, *decision[:2],
+                                      [x['evidence_id'] for x in session.calls],
+                                      close_request=review.pending_close)
+        self.assertEqual(tracker.intervals, [[0, 22.35]])
+        self.assertEqual(observation['event_update']['kind'], 'llm_close')
+        self.assertEqual(tracker.events[0]['end_decided_at_s'], 30)
+
+    def test_qwen_close_event_requires_real_local_boundary_evidence(self):
+        model = ScriptModel([reply('close_event', {'event_id': 1, 'end_s': 22.35,
+                                                   'evidence_ids': ['invented'], 'reason': 'guess'})])
+        review = ReActReview(model, boundary_tools=True, event_control=True)
+        tracker = EventTracker(llm_closure=True)
+        tracker.observe(0, 10, 'support')
+        tracker.observe(10, 20, 'support')
+        t = np.arange(7500) / 250
+        wave = Waveform(np.column_stack([np.sin(2*np.pi*8*t)]*2), 250,
+                        ('ECG1','ECG2'), ('mV','mV'))
+        session = ToolSession(ToolContext(wave, 0, 30), allow_experimental=True,
+                              cached_model=lambda *_: (np.ones(5000, dtype=np.float32),
+                                                       lambda _: (.9,.1)),
+                              evidence_context=EvidenceContext('run','task','record1'))
+        primary = session.call('score_ecgfounder', {'lead':'ECG1','start_s':20.,'end_s':30.})
+        decision = review.review(lambda *_: None, primary, 'ECG2', tracker, EventConfig(),
+                                 session, lambda *_: None, call_window=session.call)
+        self.assertEqual(decision[0], 'unavailable')
+        self.assertIsNone(review.pending_close)
+        self.assertEqual(tracker.state, 'ACTIVE')
+
+    def test_event_control_can_wait_without_closing(self):
+        model = ScriptModel([reply('finish_review', {
+            'reason': 'more evidence needed', 'evidence_ids': []})])
+        review = ReActReview(model,
+            boundary_tools=True, event_control=True)
+        tracker = EventTracker(llm_closure=True)
+        tracker.observe(0, 10, 'support')
+        tracker.observe(10, 20, 'support')
+        t = np.arange(7500) / 250
+        wave = Waveform(np.column_stack([np.sin(2*np.pi*8*t)]*2), 250,
+                        ('ECG1','ECG2'), ('mV','mV'))
+        session = ToolSession(ToolContext(wave, 0, 30), allow_experimental=True,
+                              cached_model=lambda *_: (np.ones(5000, dtype=np.float32),
+                                                       lambda _: (.9,.1)),
+                              evidence_context=EvidenceContext('run','task','record1'))
+        primary = session.call('score_ecgfounder', {'lead':'ECG1','start_s':20.,'end_s':30.})
+        logs = []
+        review.review(lambda *_: None, primary, 'ECG2', tracker, EventConfig(), session,
+                      lambda _, row: logs.append(row), call_window=session.call)
+        self.assertIsNone(review.pending_close)
+        self.assertEqual(logs[-1]['stop_reason'], 'model_finish')
+        self.assertEqual(tracker.state, 'ACTIVE')
+        self.assertIn('close_event lets you choose', model.inputs[0][0]['content'])
+        self.assertNotIn('event boundaries.', model.inputs[0][0]['content'])
+
+    def test_record_runner_applies_model_close_to_saved_prediction(self):
+        from tests.runtime.test_event_checkpoints import EventCheckpointTests
+        from cardioagent.ecg_agent.experiments.runner import run_job
+
+        class ControlledReviewer:
+            boundary_tools = True
+            event_control = True
+            live_scoring = False
+            counts = {'llm_calls': 2}
+            pending_close = None
+
+            def review(self, call, primary, secondary, tracker, config, session, emit, **kwargs):
+                if tracker.active is None:
+                    self.pending_close = None
+                    return 'support', False, 'first_window'
+                self.pending_close = {'event_id': tracker.active['event_id'],
+                                      'end_s': 12.35, 'evidence_ids': ['verified-boundary'],
+                                      'reason': 'local transition'}
+                return 'negative', True, 'model_reviewed'
+
+        with TemporaryDirectory() as d:
+            job = EventCheckpointTests().make_job(Path(d))
+            job.update(policy='event-react', mode='cached',
+                       llm={'provider':'test', 'boundary_tools':True, 'event_control':True},
+                       config=EventConfig(enter_windows=1).to_dict())
+            raw = SimpleNamespace(fs=250, sig_name=('ECG1','ECG2'), sig_len=5000,
+                                  p_signal=np.ones((5000,2)), units=('mV','mV'))
+            with patch('cardioagent.ecg_agent.llm.providers.build_chat_model', return_value=object()), \
+                 patch('cardioagent.ecg_agent.harness.react.ReActReview', return_value=ControlledReviewer()), \
+                 patch('cardioagent.ecg_agent.agent.wfdb.rdrecord', return_value=raw):
+                result, _ = run_job(job)
+            self.assertEqual(result['intervals'], [[0., 12.35]])
+            self.assertEqual(result['events'][0]['termination_reason'], 'llm_close')
+            updates = [json.loads(line) for line in (Path(job['target'])/'event_updates.jsonl').read_text().splitlines()]
+            self.assertEqual(updates[-1]['event_update']['kind'], 'llm_close')
+
+    def test_boundary_runner_scores_a_fractional_window_without_reading_future(self):
+        from tests.runtime.test_event_checkpoints import EventCheckpointTests
+        from cardioagent.ecg_agent.experiments import runner
+
+        with TemporaryDirectory() as d:
+            job = EventCheckpointTests().make_job(Path(d))
+            job.update(mode='live', policy='event-react', llm={'provider': 'test', 'boundary_tools': True})
+            model = ScriptModel([
+                reply('finish_review', {'reason': 'wait', 'evidence_ids': []}),
+                reply('score_ecgfounder', {'lead': 'ECG2', 'start_s': 6.1, 'end_s': 16.1}),
+                reply('get_beat_timeline_proxy', {'lead': 'ECG2', 'start_s': 16.25, 'end_s': 21.40}),
+            ])
+            t = np.arange(5000) / 250
+            wave = np.column_stack([np.sin(2*np.pi*8*t)]*2)
+            raw = SimpleNamespace(fs=250, sig_name=('ECG1','ECG2'), sig_len=5000,
+                                  p_signal=wave, units=('mV','mV'))
+            with patch('cardioagent.ecg_agent.llm.providers.build_chat_model', return_value=model), \
+                 patch('cardioagent.ecg_agent.agent.wfdb.rdrecord', return_value=raw), \
+                 patch.object(runner, '_MODEL', return_value=(.9, .1)) as score:
+                result, _ = runner.run_job(job)
+            self.assertEqual(score.call_count, 3)
+            self.assertEqual(score.call_args.args[0].shape, (5000,))
+            evidence = [json.loads(line) for line in (Path(job['target'])/'evidence.jsonl').read_text().splitlines()]
+            self.assertEqual(evidence[-1]['window_s'], [6.1, 16.1])
+            self.assertEqual(evidence[-1]['available_at_s'], 20.)
+            self.assertEqual(result['counts']['tool_calls'], 3)
+
     def test_history_is_bounded_and_tool_failure_is_unknown(self):
         action=reply('assess_quality',{'lead':'ECG1','start_s':0.,'end_s':10.})
         r,s,m,logs,run=self.setup_review([action,reply('finish_review',{'reason':'done','evidence_ids':[]})])

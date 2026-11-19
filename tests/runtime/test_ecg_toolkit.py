@@ -42,7 +42,7 @@ class ToolRuntimeTests(unittest.TestCase):
     def test_default_allowlist_excludes_diagnostic_and_proxy_tools(self):
         registry=build_registry();names={t['name'] for t in registry.schemas()}
         self.assertEqual(names,{'assess_quality','detect_beats','get_rate_rhythm','get_feature_profile'})
-        self.assertEqual(len(registry.schemas(True)),12)
+        self.assertEqual(len(registry.schemas(True)),13)
         self.assertNotIn('classify_rhythm',{t['name'] for t in registry.schemas(True)})
         json.dumps(registry.function_schemas(True),allow_nan=False)
 
@@ -102,6 +102,23 @@ class ToolRuntimeTests(unittest.TestCase):
     def test_short_window_is_insufficient_not_normal_zero(self):
         out=ToolSession(context()).call('get_feature_profile',{'lead':'II','start_s':0.,'end_s':2.})
         self.assertEqual(out['status'],'insufficient');self.assertEqual(out['result'],{})
+
+    def test_beat_timeline_preserves_fractional_sample_times_and_missing_fields(self):
+        args = {'lead': 'II', 'start_s': 4.123, 'end_s': 10.127}
+        session = ToolSession(context(suffix=1000.), allow_experimental=True)
+        with patch('cardioagent.ecg_agent.tools.algorithms.measure', side_effect=measured) as detector:
+            result = session.call('get_beat_timeline_proxy', args)
+            cached = session.call('get_beat_timeline_proxy', args)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['window_s'], [4.123, 10.127])
+        self.assertEqual(result['result']['sampled_window_s'], [4.13, 10.13])
+        self.assertEqual(detector.call_count, 1)
+        self.assertTrue(cached['cached'])
+        first, second = result['result']['beats'][:2]
+        self.assertAlmostEqual(first['r_time_s'], 4.63)
+        self.assertIsNone(first['rr_from_previous_ms'])
+        self.assertAlmostEqual(second['rr_from_previous_ms'], 1000.)
+        self.assertLess(second['p_candidate_time_s'], second['r_time_s'])
 
     def test_runtime_snapshots_elapsed_signal_and_discards_future(self):
         c=context();session=ToolSession(c)

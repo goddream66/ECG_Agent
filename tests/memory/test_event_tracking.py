@@ -29,6 +29,47 @@ class EventTrackingTests(unittest.TestCase):
         self.assertEqual(trace[2]['state'], 'PENDING_END')
         self.assertEqual(e['termination_reason'], 'confirmed_end')
 
+    def test_llm_closure_commits_fractional_end_and_does_not_auto_end(self):
+        tracker = EventTracker(EventConfig(), llm_closure=True)
+        tracker.observe(0, 10, 'support')
+        tracker.observe(10, 20, 'support')
+        tracker.observe(20, 30, 'negative')
+        tracker.observe(30, 40, 'negative')
+        self.assertEqual(tracker.state, 'PENDING_END')
+        self.assertIsNone(tracker.active['end_decided_at_s'])
+        update = tracker.observe(40, 50, 'negative', close_request={
+            'event_id': 1, 'end_s': 22.35, 'evidence_ids': ['beat-1'], 'reason': 'reviewed transition'})
+        self.assertEqual(tracker.state, 'IDLE')
+        self.assertEqual(tracker.intervals, [[0, 22.35]])
+        self.assertEqual((tracker.events[0]['estimated_end_s'], tracker.events[0]['end_decided_at_s']),
+                         (22.35, 50))
+        self.assertEqual(tracker.events[0]['termination_reason'], 'llm_close')
+        self.assertEqual(update['event_update']['previous_interval'], [0, 20])
+        self.assertEqual(update['event_update']['evidence_ids'], ['beat-1'])
+        tracker.observe(50, 60, 'support')
+        self.assertEqual(tracker.events[1]['event_id'], 2)
+
+    def test_llm_closure_keeps_unknown_open_until_stream_end(self):
+        tracker = EventTracker(EventConfig(), llm_closure=True)
+        tracker.observe(0, 10, 'support')
+        tracker.observe(10, 20, 'support')
+        tracker.observe(20, 30, 'unavailable')
+        tracker.observe(30, 40, 'unavailable')
+        self.assertEqual(tracker.state, 'UNKNOWN_HOLD')
+        tracker.finish(40)
+        self.assertTrue(tracker.events[0]['right_censored'])
+
+    def test_llm_close_rejects_future_or_wrong_event_without_mutation(self):
+        tracker = EventTracker(EventConfig(), llm_closure=True)
+        tracker.observe(0, 10, 'support')
+        tracker.observe(10, 20, 'support')
+        for event_id, end_s in ((2, 18.), (1, 25.), (1, 0.)):
+            with self.subTest(event_id=event_id, end_s=end_s):
+                with self.assertRaises(ValueError):
+                    tracker.close_event({'event_id': event_id, 'end_s': end_s,
+                                         'evidence_ids': ['beat-1'], 'reason': 'test'}, 20)
+                self.assertEqual(tracker.intervals, [[0, 20]])
+
     def test_one_negative_does_not_split_event_but_remains_counter_evidence(self):
         t, _ = self.tracker(['support', 'support', 'negative', 'support'])
         self.assertEqual(t.intervals, [[0, 40]])

@@ -4,9 +4,10 @@ import math
 from cardioagent.ecg_agent.policies.event_rules import EventConfig, EventRules
 
 class EventTracker:
-    def __init__(self, config=None):
+    def __init__(self, config=None, *, llm_closure=False):
         self.config = config or EventConfig()
         self.rules = EventRules(self.config)
+        self.llm_closure = llm_closure
         self.state = 'IDLE'
         self.events = []
         self.active = None
@@ -27,7 +28,30 @@ class EventTracker:
         self.support_count = self.negative_count = self.since_check = 0
         self.unknown_start = self.negative_start = self.support_start = None
 
-    def observe(self, start, end, decision, checked=False, evidence_ids=()):
+    def close_event(self, request, cursor):
+        event = self.active
+        if event is None or event['confirmed_at_s'] is None or event['event_id'] != request['event_id']:
+            raise ValueError('Only the named confirmed active event can be closed')
+        if not request['evidence_ids'] or not request['reason']:
+            raise ValueError('Event closure requires cited evidence and a reason')
+        boundary = request['end_s']
+        interval = event['reported_intervals'][-1]
+        if (not math.isfinite(boundary) or not interval[0] < boundary <= cursor
+                or self.cursor != cursor):
+            raise ValueError('Event end must be within the arrived active interval')
+        before = interval.copy()
+        interval[1] = boundary
+        event['estimated_end_s'] = boundary
+        event['end_decided_at_s'] = cursor
+        event['end_evidence_ids'] = list(request['evidence_ids'])
+        event['end_decision_reason'] = request['reason']
+        update = {'kind': 'llm_close', 'interval': interval.copy(), 'previous_interval': before,
+                  'recorded_at_s': cursor, 'evidence_ids': list(request['evidence_ids']),
+                  'reason': request['reason']}
+        self._close('llm_close', cursor)
+        return update
+
+    def observe(self, start, end, decision, checked=False, evidence_ids=(), *, close_request=None):
         if decision not in ('support', 'negative', 'conflict', 'unavailable'):
             raise ValueError('Unknown evidence interpretation')
         if not all(math.isfinite(x) for x in (start, end)) or not 0 <= start < end:
@@ -82,7 +106,7 @@ class EventTracker:
                         self.negative_start = start
                     self.negative_count += 1
                     self.state = 'PENDING_END'
-                    if self.rules.ends(self.negative_count):
+                    if not self.llm_closure and self.rules.ends(self.negative_count):
                         event['estimated_end_s'] = self.negative_start
                         event['end_decided_at_s'] = end
                         # Last support is never extended into unobserved/unknown end evidence.
@@ -95,9 +119,15 @@ class EventTracker:
                     self.unknown_start = start
                 event['unknown_intervals'].append([start, end])
                 self.state = 'UNKNOWN_HOLD'
-                if self.rules.unknown_expired(self.unknown_start, end):
+                if self.rules.unknown_expired(self.unknown_start, end) and (
+                        event['confirmed_at_s'] is None or not self.llm_closure):
                     closed_id = event['event_id']
                     self._close('unknown_timeout' if event['confirmed_at_s'] is not None else 'candidate_timeout', end)
+        if close_request is not None:
+            if not self.llm_closure:
+                raise ValueError('LLM closure is not enabled')
+            closed_id = close_request['event_id']
+            update = self.close_event(close_request, end)
         return {'window_s': [start, end], 'recorded_at_s': end, 'decision': decision,
                 'previous_state': previous, 'state': self.state,
                 'event_id': self.active['event_id'] if self.active else closed_id,

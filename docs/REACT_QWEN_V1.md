@@ -105,6 +105,47 @@ request, while the LLM is still real. It is not a real-model compute cost baseli
 `--mode fixed` does not support this interactive policy. Old variant defaults remain
 unchanged; explicitly select `--policies event-react` and `--llm-config`.
 
+## 可选边界取证
+
+在 `--llm-config` 对应的 JSON 中增加 `"boundary_tools": true`，仍使用
+`--policies event-react`。Qwen 可在最近 120 秒已到达的波形内，为任一导联
+选择小数秒区间，调用质量、R 峰、原始 RR、局部 RR 概况、P 波和 QRS 代理工具。
+`get_beat_timeline_proxy` 返回按 R 峰对齐的逐拍记录及实际采样范围。测量至少
+需要 5 秒，可用疑似转折前后的多拍信号复核更短的中断。波形工具仍按各自的
+质量和检峰要求报告失败或证据不足。
+
+`--mode live` 允许 ECGFounder 对已到达的任意完整 10 秒区间重新切窗并评分。
+`--mode cached` 的 ECGFounder 读取当前网格窗，保留区间内的信号测量可照常执行。
+例如可测量 `146.25–153.40 s` 内的逐拍证据，也可以在 live 模式对
+`143.25–153.25 s` 进行 ECGFounder 评分。
+
+存在已确认的活动事件时，Qwen 可在 `finish_review` 提交
+`proposed_end_s` 和证据 ID。接受的建议写入 `llm_steps.jsonl` 并标记事件 ID
+和当前游标。最终区间仍由现有状态机生成，建议供后续按标注评估。边界模式
+沿用现有扫描推进与调用预算。
+
+## Qwen 自主结束事件（实验性）
+
+在边界取证配置中再加入 `"event_control": true`。该配置仍使用现有十秒流式
+扫描和事件开始确认，但把**已确认事件的结束决策**交给 Qwen。此时模型可以
+调用 `close_event(event_id, end_s, evidence_ids, reason)`，也可以用
+`finish_review` 继续等待。`finish_review` 只结束本轮复核，不结束事件。
+启用该模式后，连续阴性窗和连续未知窗不会替模型关闭已确认事件；到达记录
+末尾仍会将未关闭事件标为右删失。候选事件的否定和超时规则保持原样。
+可直接选用 `configs/ecg/react_qwen_event_control.json` 作为本地 Qwen 配置；
+该文件只是入口配置，需在独立运行目录中执行实验。
+
+`close_event` 要求当前存在对应的已确认事件，`end_s` 位于该事件起点之后、
+当前游标之前，并且至少引用一次本轮已成功执行且覆盖结束时刻的局部边界
+测量。运行时拒绝未来时刻、伪造证据或错误事件 ID。成功后，输出区间的结束
+位置采用 `end_s`，同时保存原区间、估计结束时刻、实际决策时刻、证据 ID
+和理由。局部逐拍与形态工具仍是代理测量；通过结构校验不等于医学验证。
+
+新模式与原规则、仅记录 `proposed_end_s` 的模式用不同配置和运行目录配对
+比较。先检查调用率、未关闭事件、区间 F1、误合并、碎片数、结束边界误差及
+决定延迟，再判断 Qwen 的结束决策是否有增益。尚未在 AFDB 或外部数据上
+测得该模式的效果。
+
 ## Outputs and validation
 
 Per-record `llm_steps.jsonl` records selected actions, arguments, evidence IDs,

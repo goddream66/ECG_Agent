@@ -1,5 +1,6 @@
 """Typed, provider-neutral ECG tool contracts."""
 from dataclasses import dataclass
+from math import isclose
 from typing import Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from cardioagent.common.recording import Waveform
@@ -31,7 +32,7 @@ class BeatArgs(WindowArgs):
 class CachedScoreArgs(WindowArgs):
     @model_validator(mode='after')
     def complete_window(self):
-        if self.end_s - self.start_s != 10:
+        if not isclose(self.end_s - self.start_s, 10, rel_tol=0, abs_tol=1e-8):
             raise ValueError('ECGFounder requires one complete 10-second cache window')
         return self
 

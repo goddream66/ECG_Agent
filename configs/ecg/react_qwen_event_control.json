@@ -1,0 +1,10 @@
+{
+  "provider": "transformers",
+  "model_path": "/data/1shared/gaojiajun/LLM_Model/Qwen3-8B",
+  "device": "cuda:0",
+  "max_new_tokens": 512,
+  "max_rounds": 5,
+  "history_windows": 6,
+  "boundary_tools": true,
+  "event_control": true
+}

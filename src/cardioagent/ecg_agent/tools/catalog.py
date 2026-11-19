@@ -13,15 +13,18 @@ def build_registry(*, include_cached_model=False):
         ('get_rate_rhythm','Return raw RR and optional cleaning mask/statistics; no AF label.',WindowArgs,m.rhythm),
         ('get_feature_profile','Coarse RR variability bins to locate suspicious elapsed intervals.',ProfileArgs,m.profile),
     ):
-        registry.register(ToolSpec(name,description,args,handler))
+        version = '1.0.0' if name == 'assess_quality' else '1.0.1'
+        registry.register(ToolSpec(name,description,args,handler,version=version))
     for name,description,handler in (
+        ('get_beat_timeline_proxy','Return time-aligned R peaks, raw RR, P candidates and QRS occupancy for local boundary review.',m.beat_timeline),
         ('get_p_wave_proxy','Experimental P-candidate amplitude and P-peak to R-peak distance.',m.p_wave),
         ('get_qrs_proxy','Experimental suprathreshold occupancy, not QRS duration or PVC count.',m.qrs),
         ('get_st_proxy','Experimental R+120 minus R-40 voltage; does not identify J point.',m.st),
         ('get_t_wave_proxy','Experimental T-candidate amplitude in a fixed search window.',m.t_wave),
         ('get_qt_proxy','Experimental QT/Bazett proxies using assumed Q onset and threshold T end.',m.qt),
     ):
-        registry.register(ToolSpec(name,description,WindowArgs,handler,experimental=True,
+        version = '1.0.0' if name == 'get_beat_timeline_proxy' else '1.0.1'
+        registry.register(ToolSpec(name,description,WindowArgs,handler,experimental=True,version=version,
                                   source='Adapted from ECG-Scroll (MIT); local corrected proxy semantics'))
     from . import physio
     for name, description, handler in (

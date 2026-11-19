@@ -53,6 +53,7 @@ raw RR 与清洗 mask 完整保留，不按上游 MAX_LIST=60 截断。代理工
 | profile | get_feature_profile | 缺失分箱为 null，按请求窗口的峰检测统计，不取真值 |
 | get_p_wave | get_p_wave_proxy | 输出 P峰-R峰距离，不叫 PR 间期 |
 | get_beat_morphology | get_qrs_proxy | 输出阈值占用时间，不叫 QRS 时限，不计 PVC |
+| get_rhythm + get_p_wave + get_beat_morphology | get_beat_timeline_proxy | 以 R 峰时间对齐逐拍原始 RR、P 候选时刻／振幅和 QRS 阈值占用；缺测字段为 null |
 | get_st_level | get_st_proxy | 明确 R+120/R-40，未定位 J 点 |
 | get_t_wave | get_t_wave_proxy | 明确固定搜索区间与幅度代理 |
 | get_qt | get_qt_proxy | 保留假设与未知边界，不按正常范围丢弃异常值 |
