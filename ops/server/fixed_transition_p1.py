@@ -92,7 +92,9 @@ def structured(recent, visible, aliases):
                 break
             selected.append(row['window_s'])
         return [selected[-1][0], selected[0][1]] if selected else None
-    return {'timeline': timeline, 'consecutive_support_s': run_end('support'),
+    return {'timeline': timeline,
+            'measured_evidence': [compact(e, a) for a, e in zip(aliases, visible)],
+            'consecutive_support_s': run_end('support'),
             'consecutive_negative_s': run_end('negative'),
             'last_support_s': next((x['window_s'][1] for x in reversed(timeline)
                                     if x['interpretation'] == 'support'), None),

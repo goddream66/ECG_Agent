@@ -66,7 +66,9 @@ class FixedTransitionTests(unittest.TestCase):
         self.assertEqual(result['answer']['resolved_evidence_ids'],['raw2'])
         self.assertNotIn('future',json.dumps(m.messages[-1]))
         recent,visible,older,aliases=module.view(self.trace,self.evidence,80)
-        self.assertEqual(module.structured(recent,visible,aliases)['consecutive_negative_s'],[50,80])
+        summary=module.structured(recent,visible,aliases)
+        self.assertEqual(summary['consecutive_negative_s'],[50,80])
+        self.assertEqual(len(summary['measured_evidence']),len(visible))
 
     def test_rule_requires_two_consecutive_negative_windows(self):
         self.assertEqual(module.rule(self.trace,80),'TRANSITION')
