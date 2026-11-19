@@ -208,6 +208,7 @@ class ReActReview:
                 aliases = {f'E{i}': row['evidence_id'] for i, row in enumerate(session.calls, 1)}
                 messages.append({'role': 'user', 'content': json.dumps({
                     'phase': 'final_decision',
+                    'active_event_id': (tracker.active or {}).get('event_id'),
                     'evidence_aliases': [{
                         'id': alias, 'tool': row['tool'], 'lead': row['lead'],
                         'window_s': row['window_s'], 'status': row['status'],
@@ -361,6 +362,9 @@ class ReActReview:
                         messages.append({'role': 'user', 'content':
                             'Final action rejected: ' + str(exc)[:500] +
                             '. Retry exactly once with submit_event_decision. '
+                            'Use numeric active_event_id=' +
+                            str((tracker.active or {}).get('event_id')) +
+                            ' (or null if no active event). '
                             'For KEEP_OPEN or DEFER set end_s to null; cite only available evidence IDs.'})
                         continue
                     stop, failed = 'ACTION_ERROR', True
@@ -395,6 +399,7 @@ class ReActReview:
                 item['result'] = deepcopy(result['result'])
             acquired_summary.append(item)
         self.history.append({'window_s': [start, end], 'decision': decision[0],
+                             'llm_action': deepcopy(self.last_action),
                              'af_score': primary['result'].get('af_score'),
                              'afl_score': primary['result'].get('afl_score'),
                              'acquired': acquired_summary,

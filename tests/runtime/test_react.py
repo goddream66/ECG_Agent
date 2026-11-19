@@ -403,6 +403,8 @@ class ReActTests(unittest.TestCase):
         self.assertEqual(review.counts['llm_calls'], 3)
         self.assertEqual(model.tool_sets[1], ['submit_event_decision'])
         self.assertEqual(model.tool_sets[2], ['submit_event_decision'])
+        self.assertIn('active_event_id', model.inputs[1][-1]['content'])
+        self.assertIn('Final action rejected', model.inputs[2][-1]['content'])
         self.assertEqual(review.last_action['decision'], 'DEFER')
         self.assertEqual(review.last_action['evidence_ids'], [primary['evidence_id']])
         self.assertEqual(logs[-1]['stop_reason'], 'model_decision_defer')
