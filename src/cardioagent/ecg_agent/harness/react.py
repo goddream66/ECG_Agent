@@ -31,7 +31,7 @@ The signal cursor and decision time remain separate from your estimated event en
 
 class FinishReview(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
-    reason: str = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=4096)
     evidence_ids: list[str] = Field(max_length=32)
 
 
@@ -44,7 +44,7 @@ class CloseEvent(BaseModel):
     event_id: int = Field(ge=1)
     end_s: float = Field(ge=0, allow_inf_nan=False)
     evidence_ids: list[str] = Field(min_length=1, max_length=32)
-    reason: str = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=4096)
 
 
 class ReActReview:

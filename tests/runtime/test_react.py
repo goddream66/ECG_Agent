@@ -280,7 +280,7 @@ class ReActTests(unittest.TestCase):
 
     def test_event_control_can_wait_without_closing(self):
         model = ScriptModel([reply('finish_review', {
-            'reason': 'more evidence needed', 'evidence_ids': []})])
+            'reason': 'more evidence needed ' * 40, 'evidence_ids': []})])
         review = ReActReview(model,
             boundary_tools=True, event_control=True)
         tracker = EventTracker(llm_closure=True)
