@@ -3,6 +3,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 from time import perf_counter
+from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from cardioagent.ecg_agent.policies.rule_review import decide_event
 
@@ -34,6 +35,14 @@ does not establish termination. Decision time is not automatically the event end
 If no confirmed active event exists, use keep_event_open to finish review; never
 call end_confirmed_event. This action does not create or confirm an event.
 """
+UNIFIED_PROMPT = """Boundary evidence is enabled. Use only arrived retained signal.
+Measure when useful, then use submit_event_decision as the only final action.
+KEEP_OPEN means evidence supports continued AF/AFL; DEFER means termination remains
+uncertain; CLOSE requests closure of an already confirmed event. A low score,
+poor quality, or one proxy alone does not establish termination. For CLOSE,
+cite successful local boundary evidence and estimate the event end separately
+from this decision's cursor. If no confirmed event exists, do not choose CLOSE.
+"""
 
 
 class FinishReview(BaseModel):
@@ -54,19 +63,32 @@ class CloseEvent(BaseModel):
     reason: str = Field(min_length=1, max_length=4096)
 
 
+class EventDecision(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    decision: Literal['KEEP_OPEN', 'DEFER', 'CLOSE']
+    event_id: int | None
+    end_s: float | None = Field(allow_inf_nan=False)
+    evidence_ids: list[str] = Field(max_length=32)
+    reason: str = Field(min_length=1, max_length=4096)
+
+
 class ReActReview:
     def __init__(self, model, *, max_rounds=5, history_windows=6, boundary_tools=False,
-                 live_scoring=False, event_control=False, scheduled_evidence=False):
+                 live_scoring=False, event_control=False, scheduled_evidence=False,
+                 unified_event_decision=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
             raise ValueError('history_windows must be 0..24')
         if event_control and not boundary_tools:
             raise ValueError('Event control requires boundary tools')
+        if unified_event_decision and not event_control:
+            raise ValueError('Unified event decision requires event control')
         self.model, self.max_rounds, self.history_windows = model, max_rounds, history_windows
         self.boundary_tools = boundary_tools
         self.live_scoring = boundary_tools and live_scoring
         self.event_control = event_control
+        self.unified_event_decision = unified_event_decision
         self.scheduled_evidence = scheduled_evidence
         self.pending_close = None
         self.history = []
@@ -96,6 +118,12 @@ class ReActReview:
             state['scheduled_window_interpretation'] = {
                 'decision': seeded_decision[0], 'checked': seeded_decision[1],
                 'reason': seeded_decision[2]}
+        if self.unified_event_decision:
+            state['already_acquired_evidence'] = [
+                {'evidence_id': r['evidence_id'], 'tool': r['tool'], 'lead': r['lead'],
+                 'window_s': deepcopy(r['window_s']), 'status': r['status'],
+                 'result': deepcopy(r['result'])}
+                for r in session.calls if r['available_at_s'] <= end]
         # Active events may contain hours of intervals; expose bounded recent spans only.
         if state['active_event']:
             for key, value in state['active_event'].items():
@@ -112,7 +140,8 @@ class ReActReview:
                 'Choose which current-window lead to score or check for quality. Use exact lead names.\n'
                 'All measurement arguments must match current start_s/end_s. Never request future signal.\n',
                 'Use exact lead names and respect ecgfounder_scope. Never request future signal.\n'
-            ) + '\n' + (EVENT_CONTROL_PROMPT if self.event_control else BOUNDARY_PROMPT)
+            ) + '\n' + (UNIFIED_PROMPT if self.unified_event_decision else
+                         EVENT_CONTROL_PROMPT if self.event_control else BOUNDARY_PROMPT)
             if self.event_control:
                 prompt = prompt.replace(
                     'Use finish_review when acquired evidence is enough OR further useful checks cannot be made.\n'
@@ -127,13 +156,24 @@ class ReActReview:
         tools = [s for s in session.registry.function_schemas(include_experimental=self.boundary_tools)
                  if s['function']['name'] in allowed]
         finish_schema = FinishBoundaryReview if self.boundary_tools and not self.event_control else FinishReview
-        tools.append({'type': 'function', 'function': {'name': 'keep_event_open' if self.event_control else 'finish_review',
+        if self.unified_event_decision:
+            prompt = prompt + ('\nAfter measuring, use submit_event_decision as the sole final action. '
+                'KEEP_OPEN means evidence supports continuation; DEFER means the end is unresolved; '
+                'CLOSE requests termination only with local boundary evidence. For non-CLOSE, '
+                'event_id and end_s must be null. For CLOSE, cite the active event ID, actual '
+                'evidence IDs, and an estimated boundary distinct from decision time.\n')
+            messages[0]['content'] = prompt
+            tools.append({'type': 'function', 'function': {'name': 'submit_event_decision',
+                'description': 'Submit one explicit event-end decision and finish this review.',
+                'parameters': EventDecision.model_json_schema()}})
+        else:
+            tools.append({'type': 'function', 'function': {'name': 'keep_event_open' if self.event_control else 'finish_review',
                       'description': ('End this window review while leaving the confirmed event open. '
                                       'Explain continued support or uncertainty; never use to confirm an end.'
                                       if self.event_control else
                                       'Stop this window review, with evidence references; not event termination.'),
                       'parameters': finish_schema.model_json_schema()}})
-        if self.event_control:
+        if self.event_control and not self.unified_event_decision:
             tools.append({'type': 'function', 'function': {'name': 'end_confirmed_event',
                           'description': 'Request closure of the named confirmed active event using local boundary evidence.',
                           'parameters': CloseEvent.model_json_schema()}})
@@ -161,6 +201,31 @@ class ReActReview:
                 if not isinstance(args, dict):
                     raise ValueError('Tool arguments must be an object')
                 audit = dict(identity, cursor_s=end, step=step, action=name, arguments=deepcopy(args))
+                if name == 'submit_event_decision' and self.unified_event_decision:
+                    submitted = EventDecision.model_validate(args)
+                    known = {r['evidence_id']: r for r in session.calls}
+                    if len(set(submitted.evidence_ids)) != len(submitted.evidence_ids) or not set(submitted.evidence_ids) <= known.keys():
+                        raise ValueError('Event decision cites unavailable or duplicate evidence')
+                    if submitted.decision == 'CLOSE':
+                        close = CloseEvent.model_validate({
+                            'event_id': submitted.event_id, 'end_s': submitted.end_s,
+                            'evidence_ids': submitted.evidence_ids, 'reason': submitted.reason})
+                        active = tracker.active
+                        if (active is None or active['confirmed_at_s'] is None
+                                or close.event_id != active['event_id']
+                                or not active['reported_intervals'][-1][0] < close.end_s <= end
+                                or not any(known[k]['tool'] in BOUNDARY_TOOLS and known[k]['status'] == 'ok'
+                                           and known[k]['window_s'][0] <= close.end_s <= known[k]['window_s'][1]
+                                           for k in close.evidence_ids)):
+                            raise ValueError('Close needs confirmed event and successful local boundary evidence')
+                        self.pending_close = close.model_dump()
+                    elif submitted.event_id is not None or submitted.end_s is not None:
+                        raise ValueError('Non-close decision must omit event ID and end time')
+                    emit('llm_steps', dict(audit, status='decision_submitted',
+                                           decision=submitted.decision,
+                                           evidence_ids=submitted.evidence_ids))
+                    stop = 'model_decision_' + submitted.decision.lower()
+                    break
                 if name == 'end_confirmed_event' and self.event_control:
                     close = CloseEvent.model_validate(args)
                     active = tracker.active

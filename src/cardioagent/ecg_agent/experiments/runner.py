@@ -77,6 +77,7 @@ def run_job(job):
                     history_windows=job['llm'].get('history_windows', 6),
                     boundary_tools=job['llm'].get('boundary_tools', False),
                     event_control=job['llm'].get('event_control', False),
+                    unified_event_decision=job['llm'].get('unified_event_decision', False),
                     scheduled_evidence=job['llm'].get('scheduled_evidence', False),
                     live_scoring=job['mode'] == 'live')
                 llm_load_ms = (perf_counter() - load_began) * 1000

@@ -306,6 +306,66 @@ class ReActTests(unittest.TestCase):
         self.assertNotIn('Use finish_review when acquired evidence is enough', model.inputs[0][0]['content'])
         self.assertNotIn('event boundaries.', model.inputs[0][0]['content'])
 
+    def test_unified_decision_reads_scheduled_evidence_and_defers(self):
+        model = ScriptModel([reply('submit_event_decision', {
+            'decision': 'DEFER', 'event_id': None, 'end_s': None,
+            'evidence_ids': [], 'reason': 'end unresolved'})])
+        review = ReActReview(model, boundary_tools=True, event_control=True,
+                             unified_event_decision=True)
+        tracker = EventTracker(llm_closure=True)
+        tracker.observe(0, 10, 'support')
+        tracker.observe(10, 20, 'support')
+        t = np.arange(7500) / 250
+        wave = Waveform(np.column_stack([np.sin(2*np.pi*8*t)]*2), 250,
+                        ('ECG1','ECG2'), ('mV','mV'))
+        session = ToolSession(ToolContext(wave, 0, 30), allow_experimental=True,
+                              cached_model=lambda *_: (np.ones(5000, dtype=np.float32),
+                                                       lambda _: (.9,.1)),
+                              evidence_context=EvidenceContext('run','task','record1'))
+        primary = session.call('score_ecgfounder', {'lead':'ECG1','start_s':20.,'end_s':30.})
+        logs = []
+        review.review(lambda *_: None, primary, 'ECG2', tracker, EventConfig(),
+                      session, lambda _, row: logs.append(row), call_window=session.call)
+        state = json.loads(model.inputs[0][1]['content'])
+        self.assertEqual(state['already_acquired_evidence'][0]['evidence_id'], primary['evidence_id'])
+        self.assertEqual(logs[-1]['stop_reason'], 'model_decision_defer')
+        self.assertIsNone(review.pending_close)
+        self.assertNotIn('keep_event_open', model.inputs[0][0]['content'])
+
+    def test_unified_close_uses_local_boundary_evidence(self):
+        from tests.runtime.test_ecg_toolkit import measured
+
+        class Model:
+            def complete(self, messages, tools):
+                seen = [json.loads(m['content']) for m in messages if m['role'] == 'tool']
+                if not seen:
+                    return reply('get_beat_timeline_proxy', {
+                        'lead': 'ECG2', 'start_s': 18.25, 'end_s': 25.40})
+                return reply('submit_event_decision', {
+                    'decision': 'CLOSE', 'event_id': 1, 'end_s': 22.35,
+                    'evidence_ids': [seen[0]['evidence_id']], 'reason': 'local transition'})
+
+        review = ReActReview(Model(), boundary_tools=True, event_control=True,
+                             unified_event_decision=True)
+        tracker = EventTracker(llm_closure=True)
+        tracker.observe(0, 10, 'support')
+        tracker.observe(10, 20, 'support')
+        t = np.arange(7500) / 250
+        wave = Waveform(np.column_stack([np.sin(2*np.pi*8*t)]*2), 250,
+                        ('ECG1','ECG2'), ('mV','mV'))
+        session = ToolSession(ToolContext(wave, 0, 30), allow_experimental=True,
+                              cached_model=lambda *_: (np.ones(5000, dtype=np.float32),
+                                                       lambda _: (.9,.1)),
+                              evidence_context=EvidenceContext('run','task','record1'))
+        primary = session.call('score_ecgfounder', {'lead':'ECG1','start_s':20.,'end_s':30.})
+        with patch('cardioagent.ecg_agent.tools.algorithms.measure', side_effect=measured):
+            decision = review.review(lambda *_: None, primary, 'ECG2', tracker, EventConfig(),
+                                     session, lambda *_: None, call_window=session.call)
+        self.assertEqual(review.pending_close['end_s'], 22.35)
+        tracker.observe(20, 30, *decision[:2], [x['evidence_id'] for x in session.calls],
+                        close_request=review.pending_close)
+        self.assertEqual(tracker.intervals, [[0, 22.35]])
+
     def test_record_runner_applies_model_close_to_saved_prediction(self):
         from tests.runtime.test_event_checkpoints import EventCheckpointTests
         from cardioagent.ecg_agent.experiments.runner import run_job
