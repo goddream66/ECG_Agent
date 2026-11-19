@@ -20,7 +20,7 @@ class DecidabilityReviewTests(unittest.TestCase):
                      'lead': 'ecg1', 'cursor_s': 10, 'reference': 'positive'},
                     {'case_id': 'case-002', 'group': 'hard', 'record_id': 'b',
                      'lead': 'ecg2', 'cursor_s': 20, 'reference': 'negative'}]
-            (review / 'answer_key.jsonl').write_text(''.join(json.dumps(row) + '\n'
+            (root / 'decidability_answer_key.jsonl').write_text(''.join(json.dumps(row) + '\n'
                 for row in keys), encoding='utf-8')
             paired = [dict(group='main', record_id='a', lead='ecg1', cursor_s=10,
                            raw_decision='AF_AFL_ONGOING', aligned_decision='AF_AFL_ENDED',

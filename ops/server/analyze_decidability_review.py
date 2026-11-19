@@ -19,7 +19,7 @@ def read_jsonl(path):
 def analyze(review_dir, results_dir):
     with (review_dir / 'review.csv').open(encoding='utf-8', newline='') as file:
         reviews = list(csv.DictReader(file))
-    keys = read_jsonl(review_dir / 'answer_key.jsonl')
+    keys = read_jsonl(review_dir.parent / 'decidability_answer_key.jsonl')
     paired = read_jsonl(results_dir / 'paired.jsonl')
     by_id = {row['case_id']: row for row in keys}
     if len(by_id) != len(keys) or len(reviews) != len(keys) or \

@@ -62,7 +62,7 @@ def build(cases, raw_root, output):
                                  'decidability': '', 'waveform_judgment': '',
                                  'evidence_basis': '', 'reviewer': '', 'notes': ''})
     # This linkage contains the reference labels for analysis after blind review.
-    with (output / 'answer_key.jsonl').open('w', encoding='utf-8') as file:
+    with (output.parent / 'decidability_answer_key.jsonl').open('w', encoding='utf-8') as file:
         index = 0
         for group in ('main', 'hard'):
             for line in (cases / group / 'cases.jsonl').read_text(encoding='utf-8').splitlines():
