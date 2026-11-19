@@ -185,7 +185,10 @@ class ReActReview:
             self.counts['llm_calls'] += 1
             try:
                 try:
-                    reply = self.model.complete(deepcopy(messages), deepcopy(tools))
+                    available_tools = ([t for t in tools if t['function']['name'] == 'submit_event_decision']
+                                       if self.unified_event_decision and step == self.max_rounds - 1
+                                       else tools)
+                    reply = self.model.complete(deepcopy(messages), deepcopy(available_tools))
                 finally:
                     self.counts['llm_ms'] += (perf_counter() - began) * 1000
                 for key in ('prompt_tokens', 'completion_tokens'):

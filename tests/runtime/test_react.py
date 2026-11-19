@@ -307,10 +307,15 @@ class ReActTests(unittest.TestCase):
         self.assertNotIn('event boundaries.', model.inputs[0][0]['content'])
 
     def test_unified_decision_reads_scheduled_evidence_and_defers(self):
-        model = ScriptModel([reply('submit_event_decision', {
+        class DecisionModel(ScriptModel):
+            def complete(self, messages, tools):
+                self.final_tools = [t['function']['name'] for t in tools]
+                return super().complete(messages, tools)
+
+        model = DecisionModel([reply('submit_event_decision', {
             'decision': 'DEFER', 'event_id': None, 'end_s': None,
             'evidence_ids': [], 'reason': 'end unresolved'})])
-        review = ReActReview(model, boundary_tools=True, event_control=True,
+        review = ReActReview(model, max_rounds=1, boundary_tools=True, event_control=True,
                              unified_event_decision=True)
         tracker = EventTracker(llm_closure=True)
         tracker.observe(0, 10, 'support')
@@ -331,6 +336,7 @@ class ReActTests(unittest.TestCase):
         self.assertEqual(logs[-1]['stop_reason'], 'model_decision_defer')
         self.assertIsNone(review.pending_close)
         self.assertNotIn('keep_event_open', model.inputs[0][0]['content'])
+        self.assertEqual(model.final_tools, ['submit_event_decision'])
 
     def test_unified_close_uses_local_boundary_evidence(self):
         from tests.runtime.test_ecg_toolkit import measured
