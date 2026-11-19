@@ -46,4 +46,4 @@ raw 的 3 次无效输出不能算作正确持续判断。aligned 减少困难�
 - 代码：`ops/server/evidence_reasoning_p31.py`、`summarize_evidence_reasoning_p31.py`、`prepare_decidability_review.py`、`analyze_decidability_review.py`。
 - 服务器结果：`/data/1shared/gaojiajun/ECGagent/runs/afdb-evidence-reasoning-p31-end-20261119/`。
 - 盲审材料：结果目录下 `decidability_review/review.csv`、`blinded_evidence.jsonl`、`case-*.png`；答案在单独的 `answer_key.jsonl`。
-- 测试：服务器 207 项单元测试通过。
+- 测试：服务器 208 项单元测试通过。
