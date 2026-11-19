@@ -53,6 +53,7 @@ class LocalQwenModel:
                                          max_new_tokens=self.config.get('max_new_tokens', 512))
         n = inputs['input_ids'].shape[-1]
         raw = self.tokenizer.decode(output[0, n:], skip_special_tokens=True)
+        self.last_raw = raw
         return ModelReply(parse_qwen_tool_reply(raw), {'prompt_tokens': n,
                           'completion_tokens': output.shape[-1] - n})
 
