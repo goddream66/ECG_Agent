@@ -222,12 +222,13 @@ class ReActTests(unittest.TestCase):
         class ClosingModel:
             def complete(self, messages, tools):
                 names = {tool['function']['name'] for tool in tools}
-                assert 'close_event' in names
+                assert 'end_confirmed_event' in names
+                assert 'keep_event_open' in names
                 results = [json.loads(m['content']) for m in messages if m['role'] == 'tool']
                 if not results:
                     return reply('get_beat_timeline_proxy', {
                         'lead': 'ECG2', 'start_s': 18.25, 'end_s': 25.40})
-                return reply('close_event', {'event_id': 1, 'end_s': 22.35,
+                return reply('end_confirmed_event', {'event_id': 1, 'end_s': 22.35,
                                              'evidence_ids': [results[0]['evidence_id']],
                                              'reason': 'locally reviewed rhythm transition'})
 
@@ -249,7 +250,7 @@ class ReActTests(unittest.TestCase):
                                      'ECG2', tracker, EventConfig(), session,
                                      lambda _, row: logs.append(row), call_window=session.call)
         self.assertEqual(review.pending_close['end_s'], 22.35)
-        self.assertEqual(logs[-1]['stop_reason'], 'model_close_event')
+        self.assertEqual(logs[-1]['stop_reason'], 'model_end_confirmed_event')
         observation = tracker.observe(20, 30, *decision[:2],
                                       [x['evidence_id'] for x in session.calls],
                                       close_request=review.pending_close)
@@ -258,7 +259,7 @@ class ReActTests(unittest.TestCase):
         self.assertEqual(tracker.events[0]['end_decided_at_s'], 30)
 
     def test_qwen_close_event_requires_real_local_boundary_evidence(self):
-        model = ScriptModel([reply('close_event', {'event_id': 1, 'end_s': 22.35,
+        model = ScriptModel([reply('end_confirmed_event', {'event_id': 1, 'end_s': 22.35,
                                                    'evidence_ids': ['invented'], 'reason': 'guess'})])
         review = ReActReview(model, boundary_tools=True, event_control=True)
         tracker = EventTracker(llm_closure=True)
@@ -279,7 +280,7 @@ class ReActTests(unittest.TestCase):
         self.assertEqual(tracker.state, 'ACTIVE')
 
     def test_event_control_can_wait_without_closing(self):
-        model = ScriptModel([reply('finish_review', {
+        model = ScriptModel([reply('keep_event_open', {
             'reason': 'more evidence needed ' * 40, 'evidence_ids': []})])
         review = ReActReview(model,
             boundary_tools=True, event_control=True)
@@ -298,9 +299,11 @@ class ReActTests(unittest.TestCase):
         review.review(lambda *_: None, primary, 'ECG2', tracker, EventConfig(), session,
                       lambda _, row: logs.append(row), call_window=session.call)
         self.assertIsNone(review.pending_close)
-        self.assertEqual(logs[-1]['stop_reason'], 'model_finish')
+        self.assertEqual(logs[-1]['stop_reason'], 'model_keep_event_open')
         self.assertEqual(tracker.state, 'ACTIVE')
-        self.assertIn('close_event lets you choose', model.inputs[0][0]['content'])
+        self.assertIn('end_confirmed_event', model.inputs[0][0]['content'])
+        self.assertIn('keep_event_open', model.inputs[0][0]['content'])
+        self.assertNotIn('Use finish_review when acquired evidence is enough', model.inputs[0][0]['content'])
         self.assertNotIn('event boundaries.', model.inputs[0][0]['content'])
 
     def test_record_runner_applies_model_close_to_saved_prediction(self):
@@ -349,7 +352,7 @@ class ReActTests(unittest.TestCase):
                        llm={'provider':'test', 'boundary_tools':True,
                             'scheduled_evidence':True, 'event_control':True},
                        config=EventConfig(enter_windows=1).to_dict())
-            model = ScriptModel([reply('finish_review', {'reason':'keep open', 'evidence_ids':[]})]*2)
+            model = ScriptModel([reply('keep_event_open', {'reason':'keep open', 'evidence_ids':[]})]*2)
             t = np.arange(5000) / 250
             raw = SimpleNamespace(fs=250, sig_name=('ECG1','ECG2'), sig_len=5000,
                                   p_signal=np.column_stack([np.sin(2*np.pi*8*t)]*2),

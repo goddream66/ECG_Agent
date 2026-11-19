@@ -20,12 +20,19 @@ The runtime records the suggestion. It uses its separate event lifecycle to clos
 EVENT_CONTROL_PROMPT = """Boundary evidence is enabled. Choose a range wholly inside the retained arrived signal.
 Fractional seconds are allowed. For a possible rhythm change query surrounding beats on either lead.
 Use get_beat_timeline_proxy for aligned raw RR, P candidates and QRS morphology proxies.
-You may close an already confirmed active AF/AFL event with close_event.
-First measure local boundary evidence on arrived signal, then give the event ID, estimated end time,
-actual evidence IDs and a reason. close_event ends this review and commits the event end.
-Use finish_review to leave the event open when evidence is insufficient. A low window score,
-poor quality or a single proxy measurement alone does not establish a rhythm transition.
-The signal cursor and decision time remain separate from your estimated event end.
+There are two distinct final actions for a confirmed active event:
+- keep_event_open: end only this window's review. In reason, state either that available
+  evidence supports continued AF/AFL or that the end remains uncertain, and say why.
+  Do not use this action to report a confirmed event end.
+- end_confirmed_event: request closure of the named event. First obtain successful local
+  boundary evidence on arrived signal, then provide event_id, estimated end_s, actual
+  evidence_ids and a reason explaining why they support a rhythm transition.
+If you conclude the event has ended and have the required local evidence, call
+end_confirmed_event, not keep_event_open. If evidence is insufficient, keep the event
+open and explain what remains unresolved. A low score, poor quality or one proxy alone
+does not establish termination. Decision time is not automatically the event end time.
+If no confirmed active event exists, use keep_event_open to finish review; never
+call end_confirmed_event. This action does not create or confirm an event.
 """
 
 
@@ -108,21 +115,27 @@ class ReActReview:
             ) + '\n' + (EVENT_CONTROL_PROMPT if self.event_control else BOUNDARY_PROMPT)
             if self.event_control:
                 prompt = prompt.replace(
+                    'Use finish_review when acquired evidence is enough OR further useful checks cannot be made.\n'
                     'Stopping review does not mean the event has ended. The existing rule interpreter and\n'
-                    'event lifecycle determine support/negative/conflict/unavailable and event boundaries.\n',
-                    'Stopping review leaves the event open. The rule interpreter determines window evidence,\n'
-                    'while close_event lets you choose the end of a confirmed active event.\n')
+                    'event lifecycle determine support/negative/conflict/unavailable and event boundaries.\n'
+                    'Return a short action justification and actual evidence IDs in finish_review.\n',
+                    'Choose a final action only after considering acquired evidence and the active event.\n'
+                    'The rule interpreter determines each window interpretation; the event-end action\n'
+                    'controls closure of a confirmed event. Cite actual evidence IDs.\n')
         messages = [{'role': 'system', 'content': prompt},
                     {'role': 'user', 'content': json.dumps(state, allow_nan=False)}]
         tools = [s for s in session.registry.function_schemas(include_experimental=self.boundary_tools)
                  if s['function']['name'] in allowed]
         finish_schema = FinishBoundaryReview if self.boundary_tools and not self.event_control else FinishReview
-        tools.append({'type': 'function', 'function': {'name': 'finish_review',
-                      'description': 'Stop this window review, with evidence references; not event termination.',
+        tools.append({'type': 'function', 'function': {'name': 'keep_event_open' if self.event_control else 'finish_review',
+                      'description': ('End this window review while leaving the confirmed event open. '
+                                      'Explain continued support or uncertainty; never use to confirm an end.'
+                                      if self.event_control else
+                                      'Stop this window review, with evidence references; not event termination.'),
                       'parameters': finish_schema.model_json_schema()}})
         if self.event_control:
-            tools.append({'type': 'function', 'function': {'name': 'close_event',
-                          'description': 'Commit the end of the named confirmed active event.',
+            tools.append({'type': 'function', 'function': {'name': 'end_confirmed_event',
+                          'description': 'Request closure of the named confirmed active event using local boundary evidence.',
                           'parameters': CloseEvent.model_json_schema()}})
         stop = 'round_limit'
         failed = False
@@ -148,7 +161,7 @@ class ReActReview:
                 if not isinstance(args, dict):
                     raise ValueError('Tool arguments must be an object')
                 audit = dict(identity, cursor_s=end, step=step, action=name, arguments=deepcopy(args))
-                if name == 'close_event' and self.event_control:
+                if name == 'end_confirmed_event' and self.event_control:
                     close = CloseEvent.model_validate(args)
                     active = tracker.active
                     known = {r['evidence_id']: r for r in session.calls}
@@ -164,9 +177,9 @@ class ReActReview:
                     self.pending_close = close.model_dump()
                     emit('llm_steps', dict(audit, status='close_requested',
                                            evidence_ids=close.evidence_ids))
-                    stop = 'model_close_event'
+                    stop = 'model_end_confirmed_event'
                     break
-                if name == 'finish_review':
+                if name == ('keep_event_open' if self.event_control else 'finish_review'):
                     finish = finish_schema.model_validate(args)
                     known = {r['evidence_id']: r for r in session.calls}
                     if not set(finish.evidence_ids) <= known.keys():
@@ -185,7 +198,7 @@ class ReActReview:
                             raise ValueError('Proposed end needs an active event and successful local evidence at the boundary')
                         recorded.update(proposed_end_s=proposed, proposed_for_event_id=active['event_id'])
                     emit('llm_steps', recorded)
-                    stop = 'model_finish'
+                    stop = 'model_keep_event_open' if self.event_control else 'model_finish'
                     break
                 if name not in allowed:
                     raise ValueError('Tool is not enabled for this review')

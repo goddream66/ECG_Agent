@@ -30,6 +30,16 @@ OLD_TOOLS = [
                              'evidence_ids': FINAL_FIELDS['evidence_ids']},
            ['reason', 'evidence_ids']),
     schema('close_event', FINAL_FIELDS, list(FINAL_FIELDS))]
+RENAMED_TOOLS = [
+    schema('keep_event_open', {'reason': {'type': 'string'},
+                               'evidence_ids': FINAL_FIELDS['evidence_ids']},
+           ['reason', 'evidence_ids']),
+    schema('end_confirmed_event', FINAL_FIELDS, list(FINAL_FIELDS))]
+RENAMED_TOOLS[0]['function']['description'] = (
+    'End this window review while leaving the confirmed event open. Explain continued '
+    'support or uncertainty; never use to confirm an end.')
+RENAMED_TOOLS[1]['function']['description'] = (
+    'Request closure of the named confirmed active event using local boundary evidence.')
 UNIFIED = [schema('submit_event_decision', {
     'decision': {'type': 'string', 'enum': ['KEEP_OPEN', 'CLOSE', 'DEFER']},
     'event_id': {'type': 'integer'}, 'end_s': {'type': ['number', 'null']},
@@ -60,7 +70,8 @@ def decide(model, cursor, trace, evidence, arm):
     system = ('A confirmed AF/AFL event is active. Signal arrives online. Use only supplied '
               'measurements; low model scores are not definitive rhythm diagnoses. '
               'Decision time and estimated boundary are different. Cite real evidence IDs. ')
-    tools = OLD_TOOLS if arm in ('original', 'priority') else UNIFIED
+    tools = (OLD_TOOLS if arm in ('original', 'priority') else
+             RENAMED_TOOLS if arm == 'renamed' else UNIFIED)
     if arm == 'original':
         system += ('Use finish_review when current review evidence is enough or no further '
                    'measurement is useful. Use close_event only when end is confirmed.')
@@ -68,6 +79,15 @@ def decide(model, cursor, trace, evidence, arm):
         system += ('If evidence supports the event ending, call close_event, never '
                    'finish_review. Otherwise call finish_review and explain whether AF '
                    'continues or evidence is insufficient.')
+    elif arm == 'renamed':
+        system += ('Choose one final action. keep_event_open ends only this window review: '
+                   'in its reason state whether evidence supports continued AF/AFL or the '
+                   'end remains uncertain, and why. Do not use it to report a confirmed end. '
+                   'end_confirmed_event requests closure of the named confirmed event: '
+                   'cite local boundary evidence and distinguish estimated end_s from decision '
+                   'time. If the event has ended and the required evidence exists, call '
+                   'end_confirmed_event, not keep_event_open. A low score, poor quality, '
+                   'or one proxy alone does not establish termination.')
     else:
         system += ('Call submit_event_decision exactly once: KEEP_OPEN if supported, '
                    'CLOSE if the end is supported, DEFER if insufficient or conflicting. '
@@ -98,7 +118,7 @@ def decide(model, cursor, trace, evidence, arm):
                 raise ValueError('invalid_decision')
             action = args['decision']
         else:
-            action = 'CLOSE' if fn['name'] == 'close_event' else 'FINISH'
+            action = 'CLOSE' if fn['name'] in ('close_event', 'end_confirmed_event') else 'FINISH'
         end_s = args.get('end_s')
         if action == 'CLOSE':
             if args.get('event_id') != 1 or not isinstance(end_s, (int, float)) or not view['recent_windows'][0]['start_s'] < end_s <= cursor or not args['evidence_ids']:
@@ -119,6 +139,9 @@ def main():
     p.add_argument('--llm-config', type=Path, required=True)
     p.add_argument('--cases', type=Path, required=True, help='JSON list of cursor seconds')
     p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--arms', nargs='+', choices=('original', 'priority', 'renamed',
+                                                  'unified_limited', 'unified_full'),
+                   default=('original', 'priority', 'unified_limited', 'unified_full'))
     args = p.parse_args()
     trace, evidence = (read_rows(args.source/name) for name in ('window_trace.jsonl', 'evidence.jsonl'))
     cursors = json.loads(args.cases.read_text())
@@ -126,7 +149,7 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('w', encoding='utf-8') as out:
         for cursor in cursors:
-            for arm in ('original', 'priority', 'unified_limited', 'unified_full'):
+            for arm in args.arms:
                 row = decide(model, cursor, trace, evidence, arm)
                 out.write(json.dumps(row, ensure_ascii=False, allow_nan=False)+'\n')
                 out.flush()
@@ -134,7 +157,7 @@ def main():
     args.output.with_suffix('.manifest.json').write_text(json.dumps({
         'source': str(args.source), 'source_hashes': {n: hashlib.sha256((args.source/n).read_bytes()).hexdigest()
         for n in ('window_trace.jsonl', 'evidence.jsonl')}, 'cursors': cursors,
-        'config': json.loads(args.llm_config.read_text())}, indent=2))
+        'config': json.loads(args.llm_config.read_text()), 'arms': args.arms}, indent=2))
 
 
 if __name__ == '__main__':

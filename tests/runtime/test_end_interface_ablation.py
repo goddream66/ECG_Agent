@@ -42,6 +42,18 @@ class EndInterfaceAblationTests(unittest.TestCase):
         row = MODULE.decide(model, 10, self.trace, self.evidence, 'unified_full')
         self.assertIn('unavailable_evidence_id', row['error'])
 
+    def test_renamed_end_action_is_parsed_as_close(self):
+        model = FakeModel(dict(event_id=1, end_s=10, evidence_ids=['E1'], reason='end'))
+        original_complete = model.complete
+        def renamed_complete(messages, tools):
+            reply = original_complete(messages, tools)
+            reply.message['tool_calls'][0]['function']['name'] = 'end_confirmed_event'
+            return reply
+        model.complete = renamed_complete
+        row = MODULE.decide(model, 10, self.trace, self.evidence, 'renamed')
+        self.assertEqual(row['action'], 'CLOSE')
+        self.assertEqual(row['resolved_evidence_ids'], ['now'])
+
 
 if __name__ == '__main__':
     unittest.main()
