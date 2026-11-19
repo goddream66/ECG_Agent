@@ -9,11 +9,14 @@ import time
 from cardioagent.ecg_agent.llm.providers import build_chat_model
 
 SOURCES = Path('/data/1shared/gaojiajun/ECGagent/runs/afdb-end-phase1-20261119/B')
+FULL_SOURCE = Path('/data/1shared/gaojiajun/ECGagent/runs/ecg-scroll-afdb-t080-20261117T104112Z')
 CASES = {
     '04126': {'positive': (560, 570, 580, 590), 'negative': (500, 520, 540)},
     '04936': {'positive': (1800, 1810, 1820), 'negative': (1700, 1750, 1780)},
     '06453': {'positive': (3080, 3090), 'negative': (3060, 3070)},
 }
+HARD_NEGATIVE = {'ecg1': {'04936': (33920,), '06453': (29390,)},
+                 'ecg2': {'04936': (7930, 31810), '06453': (29390,)}}
 SCHEMA = {'type': 'function', 'function': {'name': 'judge_transition',
     'description': 'Judge whether an already active AF/AFL event has transitioned.',
     'parameters': {'type': 'object', 'properties': {
@@ -192,22 +195,30 @@ def main():
     p.add_argument('--lead',choices=('ecg1','ecg2'),required=True)
     p.add_argument('--records',nargs='+',choices=tuple(CASES),default=list(CASES))
     p.add_argument('--arms',nargs='+',choices=('A','B','C'),default=['A','B','C'])
+    p.add_argument('--hard-only',action='store_true',
+                   help='Use predefined transient low-score windows inside reference AF events')
     args=p.parse_args()
     args.output.mkdir(parents=True,exist_ok=True)
     model=build_chat_model({'provider':'transformers','model_path':str(args.model_path),
                             'device':'cuda:0','max_new_tokens':512})
     outputs={arm:(args.output/f'{arm}-{args.lead}.jsonl') for arm in args.arms}
-    for rec in args.records:
-        source=SOURCES/args.lead/'records'/rec
-        if rec=='04126' and args.lead=='ecg2': source=source.parent/'04126-clean'
+    selections = ([(rec, 'hard_negative', cursors) for rec,cursors in
+                   HARD_NEGATIVE[args.lead].items() if rec in args.records]
+                  if args.hard_only else [(rec,label,cursors) for rec in args.records
+                     for label,cursors in CASES[rec].items()])
+    for rec,label,cursors in selections:
+        source=(FULL_SOURCE/f'live-{args.lead}'/f'{args.lead}-event-adaptive'/'records'/rec
+                if args.hard_only else SOURCES/args.lead/'records'/rec)
+        if not args.hard_only and rec=='04126' and args.lead=='ecg2':
+            source=source.parent/'04126-clean'
         trace=read_jsonl(source/'window_trace.jsonl'); evidence=read_jsonl(source/'evidence.jsonl')
         hashes={n:hashlib.sha256((source/n).read_bytes()).hexdigest()
                 for n in ('window_trace.jsonl','evidence.jsonl')}
-        for label,cursors in CASES[rec].items():
-            for cursor in cursors:
+        for cursor in cursors:
                 if not any(w['end_s']==cursor for w in trace):continue
-                if rec=='06453' and args.lead=='ecg1':continue  # no confirmed event in source
-                item={'record_id':rec,'lead':args.lead,'cursor_s':cursor,'reference':label,
+                if not args.hard_only and rec=='06453' and args.lead=='ecg1':continue  # no confirmed event in source
+                item={'record_id':rec,'lead':args.lead,'cursor_s':cursor,'reference':
+                      'negative' if args.hard_only else label,
                       'source':str(source),'source_sha256':hashes,
                       'rule':rule(trace,cursor)}
                 for arm in args.arms:
