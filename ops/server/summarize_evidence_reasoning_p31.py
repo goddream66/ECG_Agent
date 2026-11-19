@@ -48,7 +48,7 @@ def summarize(directory, cases, output):
                 'negative_n': len(negative),
                 'uncertain': sum(decision(r) == 'UNCERTAIN' for r in selected),
                 'decisions': dict(Counter(decision(r) for r in selected))}
-            reversed_ids = 0
+            numeric_direction_flags = 0
             overlapping_ids = 0
             for row in selected:
                 answer = row.get('answer') or {}
@@ -59,9 +59,11 @@ def summarize(directory, cases, output):
                 support = set(answer.get('support_transition_ids', []))
                 against = set(answer.get('against_transition_ids', []))
                 overlapping_ids += len(support & against)
-                reversed_ids += sum(values.get(identifier, .5) >= .6 for identifier in support)
-                reversed_ids += sum(values.get(identifier, .5) < .4 for identifier in against)
-            metrics[arm][group]['numeric_direction_errors'] = reversed_ids
+                numeric_direction_flags += sum(values.get(identifier, .5) >= .6 for identifier in support)
+                numeric_direction_flags += sum(values.get(identifier, .5) < .4 for identifier in against)
+            # A flagged score may be a valid historical boundary reference; this
+            # proxy needs manual context review before it can be called an error.
+            metrics[arm][group]['numeric_direction_flags'] = numeric_direction_flags
             metrics[arm][group]['ids_on_both_sides'] = overlapping_ids
     paired = []
     for identity, case in baseline.items():
