@@ -40,9 +40,9 @@ def summarize(directory, cases, output):
             decision = lambda r: (r.get('answer') or {}).get('decision', 'ERROR')
             metrics[arm][group] = {'n': len(selected),
                 'valid': sum(decision(r) != 'ERROR' for r in selected),
-                'transition_tp': sum(decision(r) == 'TRANSITION' for r in positive),
+                'transition_tp': sum(decision(r) == 'AF_AFL_ENDED' for r in positive),
                 'positive_n': len(positive),
-                'false_transition': sum(decision(r) == 'TRANSITION' for r in negative),
+                'false_transition': sum(decision(r) == 'AF_AFL_ENDED' for r in negative),
                 'negative_n': len(negative),
                 'uncertain': sum(decision(r) == 'UNCERTAIN' for r in selected),
                 'decisions': dict(Counter(decision(r) for r in selected))}

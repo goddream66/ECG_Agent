@@ -10,21 +10,25 @@ from cardioagent.ecg_agent.llm.providers import build_chat_model
 
 ARMS = ('raw', 'aligned', 'reasoned')
 SCHEMA = {'type': 'function', 'function': {'name': 'judge_transition',
-    'description': 'Report observed evidence and a provisional rhythm-transition judgment.',
+    'description': 'Judge whether the already active AF/AFL episode has ended.',
     'parameters': {'type': 'object', 'properties': {
-        'decision': {'type': 'string', 'enum': ['CONTINUE', 'TRANSITION', 'UNCERTAIN']},
+        'decision': {'type': 'string', 'enum': ['AF_AFL_ONGOING', 'AF_AFL_ENDED', 'UNCERTAIN']},
         'support_transition_ids': {'type': 'array', 'items': {'type': 'string'}},
         'against_transition_ids': {'type': 'array', 'items': {'type': 'string'}},
         'unresolved': {'type': 'string'},
         'reason': {'type': 'string'}},
         'required': ['decision', 'support_transition_ids', 'against_transition_ids',
                      'unresolved', 'reason'], 'additionalProperties': False}}}
-SYSTEM = ('An AF/AFL event is active. Inspect only the provided, already arrived ECGFounder '
-          'measurements. These scores are uncalibrated and correlated across leads. '
-          'A low score alone is not proof of conversion. CONTINUE means current support, '
-          'TRANSITION means evidence supports a change, UNCERTAIN means unresolved. '
-          'Report evidence IDs supporting and opposing transition. Historical high scores '
-          'alone cannot establish current continuation. Never invent missing measurements.')
+SYSTEM = ('An AF/AFL episode was previously confirmed and is currently open. The sole task '
+          'is to decide whether this existing AF/AFL episode has ENDED by the current cursor. '
+          'AF_AFL_ONGOING means current evidence supports continuing AF or AFL. '
+          'AF_AFL_ENDED means current evidence supports termination of AF/AFL. '
+          'A rise in AF or AFL scores supports ONGOING, never ENDED. '
+          'UNCERTAIN means current evidence does not settle whether it ended. '
+          'Inspect only supplied, already arrived ECGFounder measurements. Scores are '
+          'uncalibrated and correlated across leads. A low score alone is not proof of '
+          'termination. List IDs supporting and opposing ENDING. Past high scores alone '
+          'cannot prove current AF. Never infer missing measurements.')
 
 
 def measurements(case):
@@ -50,7 +54,7 @@ def validate(reply, available):
     answer = json.loads(raw) if isinstance(raw, str) else raw
     if set(answer) != {'decision', 'support_transition_ids', 'against_transition_ids',
                        'unresolved', 'reason'} or answer['decision'] not in (
-                       'CONTINUE', 'TRANSITION', 'UNCERTAIN'):
+                       'AF_AFL_ONGOING', 'AF_AFL_ENDED', 'UNCERTAIN'):
         raise ValueError('Invalid answer')
     for field in ('support_transition_ids', 'against_transition_ids'):
         ids = answer[field]
