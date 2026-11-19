@@ -15,7 +15,7 @@ P3-1 的 Qwen 只看到了截止判断时刻已取得的 ECGFounder 分数；原
 
 - 35 个判断点来自 3 条记录、21 个不同的记录时间点；两导联及相近时刻会重复。因此这些不是 35 个独立患者样本。
 - 案例按匿名记录、游标升序排列。审阅者只接收 `stage_a/` 或 `stage_b/` 目录，不接收父目录；父目录保留真实记录映射、参考答案和尚未释放的案例。
-- 每阶段先释放第一例。审阅者完成当前 CSV 行后，研究者执行 `release-next`，才复制下一例。这样当前公开目录中没有同一记录较晚时刻的案例。B 阶段只有 A 阶段全部完成后才能生成；其第一例同样逐例释放。
+- 每阶段先释放第一例。公开的 `review.csv` 也只含已释放的行，因此不暴露较晚案例的时间表。审阅者完成当前行后，研究者执行 `release-next`，才追加下一行并复制对应证据。B 阶段只有 A 阶段全部完成后才能生成；其第一例同样逐例释放。
 - 每个分数测量的窗口终点不得晚于判断游标。B 阶段波形读取到游标为止。若 A 阶段 CSV 在 B 生成后被修改，分析程序会因哈希不一致而拒绝解盲。
 - 仅用文件权限隔离私有父目录与公开阶段目录；共享同一服务器账号的研究者仍可访问父目录，所以审阅者应只拿到单独交付的公开目录。记录审阅顺序、审阅者、失败及偏离协议的情况。
 
@@ -24,24 +24,24 @@ P3-1 的 Qwen 只看到了截止判断时刻已取得的 ECGFounder 分数；原
 ```bash
 python ops/server/prepare_decidability_review_v2.py stage-a \
   --cases /data/1shared/gaojiajun/ECGagent/runs/afdb-fixed-transition-p3-0-v2-20261119 \
-  --output /data/1shared/gaojiajun/ECGagent/runs/afdb-decidability-p32-v2-20261120
+  --output /data/1shared/gaojiajun/ECGagent/runs/afdb-decidability-p32-v2-gated-20261120
 
 # 审阅者填写 stage_a/review.csv 当前已释放案例的行后，研究者逐次执行：
 python ops/server/prepare_decidability_review_v2.py release-next \
-  --output /data/1shared/gaojiajun/ECGagent/runs/afdb-decidability-p32-v2-20261120 \
+  --output /data/1shared/gaojiajun/ECGagent/runs/afdb-decidability-p32-v2-gated-20261120 \
   --review-stage stage-a
 
 # 只有 35 例 Stage A 全部完成后，才能释放 Stage B：
 python ops/server/prepare_decidability_review_v2.py stage-b \
-  --output /data/1shared/gaojiajun/ECGagent/runs/afdb-decidability-p32-v2-20261120 \
+  --output /data/1shared/gaojiajun/ECGagent/runs/afdb-decidability-p32-v2-gated-20261120 \
   --raw-root /data/1shared/gaojiajun/ECGagent/data/afdb_local
 
 # Stage B 同样逐例填写 review.csv 并执行 release-next --review-stage stage-b。
 # 两阶段全部完成后再解盲：
 python ops/server/analyze_decidability_review_v2.py \
-  --review-root /data/1shared/gaojiajun/ECGagent/runs/afdb-decidability-p32-v2-20261120 \
+  --review-root /data/1shared/gaojiajun/ECGagent/runs/afdb-decidability-p32-v2-gated-20261120 \
   --results /data/1shared/gaojiajun/ECGagent/runs/afdb-evidence-reasoning-p31-end-20261119 \
-  --output /data/1shared/gaojiajun/ECGagent/runs/afdb-decidability-p32-v2-20261120/analysis.json
+  --output /data/1shared/gaojiajun/ECGagent/runs/afdb-decidability-p32-v2-gated-20261120/analysis.json
 ```
 
 ## 解盲后的分析

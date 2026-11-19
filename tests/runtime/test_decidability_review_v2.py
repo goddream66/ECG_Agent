@@ -37,6 +37,7 @@ class ReviewV2Tests(unittest.TestCase):
             stage_a = output / 'stage_a'
             self.assertTrue((stage_a / 'cases/case-001.json').exists())
             self.assertFalse((stage_a / 'cases/case-002.json').exists())
+            self.assertEqual(len(read_csv(stage_a / 'review.csv')), 1)
             self.assertEqual(audit_stage_a(output)['released_stage_a_cases'], 1)
             packet = json.loads((stage_a / 'cases/case-001.json').read_text())
             self.assertEqual(packet['cursor_s'], 20)
@@ -54,6 +55,7 @@ class ReviewV2Tests(unittest.TestCase):
             write_csv(stage_a / 'review.csv', fields, rows)
             self.assertEqual(release_next(output, 'stage-a')['released_case'],
                              'case-002')
+            rows = read_csv(stage_a / 'review.csv')
             rows[1].update(review_status='reviewed', decidability='insufficient',
                            judgment='UNCERTAIN', confidence_1to5='3',
                            evidence_ids='', rationale='ambiguous', reviewer='r1')
@@ -74,6 +76,7 @@ class ReviewV2Tests(unittest.TestCase):
             write_csv(stage_b / 'review.csv', b_fields, b_rows)
             self.assertEqual(release_next(output, 'stage-b')['released_case'],
                              'case-002')
+            b_rows = read_csv(stage_b / 'review.csv')
             b_rows[1].update(review_status='reviewed', decidability='sufficient',
                              judgment='AF_AFL_ENDED', confidence_1to5='4',
                              waveform_basis='rhythm', next_evidence_needed='none',

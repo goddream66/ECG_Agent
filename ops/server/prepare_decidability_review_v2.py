@@ -91,7 +91,8 @@ def build_stage_a(source, output):
         for row in key), encoding='utf-8')
     (output / 'private_packet_hashes.json').write_text(json.dumps(packet_hashes,
         indent=2), encoding='utf-8')
-    write_csv(stage / 'review.csv', list(review[0]), review)
+    write_csv(output / 'private_stage_a_plan.csv', list(review[0]), review)
+    write_csv(stage / 'review.csv', list(review[0]), [])
     (stage / 'README.txt').write_text(
         'Stage A: review cases in CSV order, without opening later cases first. '
         'Each JSON contains the same ECGFounder measurement items available to Qwen, '
@@ -111,40 +112,39 @@ def build_stage_a(source, output):
 
 def release_next(output, stage_name):
     stage = output / ('stage_a' if stage_name == 'stage-a' else 'stage_b')
+    plan = read_csv(output / ('private_stage_a_plan.csv' if stage_name == 'stage-a'
+                              else 'private_stage_b_plan.csv'))
     rows = read_csv(stage / 'review.csv')
     subfolder = 'cases' if stage_name == 'stage-a' else 'waveforms'
     private = output / ('private_score_packets' if stage_name == 'stage-a'
                         else 'private_waveforms')
     suffix = '.json' if stage_name == 'stage-a' else '.png'
-    released_indices = [index for index, row in enumerate(rows)
-        if (stage / subfolder / f"{row['case_id']}{suffix}").exists()]
-    if released_indices != list(range(len(released_indices))):
-        raise ValueError('A future case was released early')
-    released = 0
-    for index, row in enumerate(rows):
-        case_id = row['case_id']
-        target = stage / subfolder / f'{case_id}{suffix}'
-        if target.exists():
-            released += 1
-            if row['review_status'] == 'pending':
-                return {'released_case': None, 'released_count': released,
-                        'total': len(rows), 'waiting_for_review': case_id}
-            if row['review_status'] != 'reviewed':
-                raise ValueError('Invalid review status')
-            continue
-        if row['review_status'] != 'pending':
-            raise ValueError('Review rows must be completed in release order')
-        if any((stage / subfolder / f"{later['case_id']}{suffix}").exists()
-               for later in rows[index + 1:]):
-            raise ValueError('A future case was released early')
-        shutil.copyfile(private / f'{case_id}{suffix}', target)
-        return {'released_case': case_id, 'released_count': released + 1,
-                'total': len(rows)}
+    if len(rows) > len(plan):
+        raise ValueError('Review contains unplanned cases')
+    fixed = ('order', 'case_id', 'record_alias', 'cursor_s',
+             'evidence_file' if stage_name == 'stage-a' else 'waveform_file')
+    for row, planned in zip(rows, plan):
+        if any(row[field] != planned[field] for field in fixed):
+            raise ValueError('Released case metadata was modified')
+    visible = sorted(path.stem for path in (stage / subfolder).glob(f'*{suffix}'))
+    expected = sorted(row['case_id'] for row in rows)
+    if visible != expected:
+        raise ValueError('Visible evidence differs from released review rows')
+    if rows and rows[-1]['review_status'] == 'pending':
+        return {'released_case': None, 'released_count': len(rows),
+                'total': len(plan), 'waiting_for_review': rows[-1]['case_id']}
     if any(row['review_status'] != 'reviewed' for row in rows):
-        return {'released_case': None, 'released_count': released, 'total': len(rows),
-                'waiting_for_review': True}
-    return {'released_case': None, 'released_count': released, 'total': len(rows),
-            'complete': True}
+        raise ValueError('Review rows must be completed in release order')
+    if len(rows) == len(plan):
+        return {'released_case': None, 'released_count': len(rows),
+                'total': len(plan), 'complete': True}
+    next_row = plan[len(rows)]
+    case_id = next_row['case_id']
+    shutil.copyfile(private / f'{case_id}{suffix}',
+                    stage / subfolder / f'{case_id}{suffix}')
+    write_csv(stage / 'review.csv', list(plan[0]), rows + [next_row])
+    return {'released_case': case_id, 'released_count': len(rows) + 1,
+            'total': len(plan)}
 
 
 def validate_review(rows, stage, output):
@@ -254,7 +254,8 @@ def build_stage_b(output, raw_root, render=render_waveform):
                        'waveform_basis': '', 'next_evidence_needed': '', 'reviewer': ''})
     stage_b.mkdir()
     (stage_b / 'waveforms').mkdir()
-    write_csv(stage_b / 'review.csv', list(review[0]), review)
+    write_csv(output / 'private_stage_b_plan.csv', list(review[0]), review)
+    write_csv(stage_b / 'review.csv', list(review[0]), [])
     (stage_b / 'LOCKED_STAGE_A_SHA256.txt').write_text(digest + '\n', encoding='utf-8')
     (stage_b / 'README.txt').write_text(
         'Stage B is released only after all Stage A reviews are complete and sealed. '
@@ -275,11 +276,11 @@ def audit_stage_a(output):
     key = [json.loads(line) for line in (output / 'answer_key.jsonl').read_text(
         encoding='utf-8').splitlines() if line.strip()]
     rows = read_csv(stage / 'review.csv')
-    if len(rows) != len(key) or [row['case_id'] for row in rows] != \
-            [row['case_id'] for row in key]:
+    if [row['case_id'] for row in rows] != \
+            [row['case_id'] for row in key[:len(rows)]]:
         raise ValueError('Audit case mismatch')
     released = sorted((stage / 'cases').glob('case-*.json'))
-    if [path.stem for path in released] != [row['case_id'] for row in rows[:len(released)]]:
+    if [path.stem for path in released] != [row['case_id'] for row in rows]:
         raise ValueError('Released cases are not a chronological prefix')
     packets = []
     for path in released:
