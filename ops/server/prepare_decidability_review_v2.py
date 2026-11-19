@@ -150,6 +150,8 @@ def release_next(output, stage_name):
 def validate_review(rows, stage, output):
     key = [json.loads(line) for line in (output / 'answer_key.jsonl').read_text(
         encoding='utf-8').splitlines() if line.strip()]
+    if len(rows) < len(key):
+        raise ValueError(f'Incomplete Stage A review: {len(rows)}/{len(key)} cases released')
     if len(rows) != len(key) or [row['case_id'] for row in rows] != \
             [row['case_id'] for row in key]:
         raise ValueError('Review cases or order differ from sealed source')
