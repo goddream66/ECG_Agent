@@ -33,6 +33,8 @@ raw 的 3 次无效输出不能算作正确持续判断。aligned 减少困难�
 
 ## P3-2：证据可判定性
 
+下面记录的是初版单阶段材料；正式盲审改用 [两阶段方案](ECG_AGENT_P32_TWO_STAGE_REVIEW.md)，先审与 Qwen 相同的分数，再释放波形。初版材料保留用于追溯，不据此作证据推理与波形信息来源的归因。
+
 已生成 35 份截止判断时刻的双导联波形图、无真值的测量文件和盲审表。参考答案单独存放。盲审在 `review.csv` 中记录 `review_status=reviewed`、`decidability`、`waveform_judgment`、审核者及依据。`decidability` 可填 `existing_sufficient`（已有证据可判定）、`need_measurement`（需要合法补测）、`need_wait`（需要未来窗口）、`tools_insufficient`（现有工具不能判定）或 `indeterminate`（波形仍不确定）；`waveform_judgment` 可填 `AF_AFL_ONGOING / AF_AFL_ENDED / UNCERTAIN`。审核完成后由 `analyze_decidability_review.py` 解盲汇总，并分别报告与参考标注及三组 Qwen 判断的差异。尚无独立审核结果，因此目前不能统计根因比例，也不能据此决定 SFT 或主动取证优先级。
 
 ## 后续门槛
