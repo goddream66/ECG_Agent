@@ -42,7 +42,7 @@ class ToolRuntimeTests(unittest.TestCase):
     def test_default_allowlist_excludes_diagnostic_and_proxy_tools(self):
         registry=build_registry();names={t['name'] for t in registry.schemas()}
         self.assertEqual(names,{'assess_quality','detect_beats','get_rate_rhythm','get_feature_profile'})
-        self.assertEqual(len(registry.schemas(True)),13)
+        self.assertEqual(len(registry.schemas(True)),14)
         self.assertNotIn('classify_rhythm',{t['name'] for t in registry.schemas(True)})
         json.dumps(registry.function_schemas(True),allow_nan=False)
 

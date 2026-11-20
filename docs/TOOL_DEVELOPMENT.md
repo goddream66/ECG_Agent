@@ -50,6 +50,7 @@ raw RR 与清洗 mask 完整保留，不按上游 MAX_LIST=60 截断。代理工
 | ECG-Scroll 代码 | 当前实现 | 差异 |
 |---|---|---|
 | get_rhythm / _clean_rr | get_rate_rhythm | 原始 RR、清洗 mask、两组统计并存 |
+| XQRS 检峰 | detect_beats_xqrs_proxy | 实验性局部 XQRS，仅读取 ToolSession 已到达窗口；保留原始 RR、清洗掩码与失败状态，不使用上游全记录峰缓存。尚需独立心搏标注验证。 |
 | profile | get_feature_profile | 缺失分箱为 null，按请求窗口的峰检测统计，不取真值 |
 | get_p_wave | get_p_wave_proxy | 输出 P峰-R峰距离，不叫 PR 间期 |
 | get_beat_morphology | get_qrs_proxy | 输出阈值占用时间，不叫 QRS 时限，不计 PVC |

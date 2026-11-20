@@ -10,10 +10,16 @@ from cardioagent.ecg_agent.policies.rule_review import decide_event
 PROMPT = Path(__file__).resolve().parents[1] / 'prompts/react_review_v1.txt'
 ALLOWED = frozenset(('score_ecgfounder', 'assess_quality'))
 BOUNDARY_TOOLS = frozenset(('detect_beats', 'get_rate_rhythm', 'get_feature_profile',
-                            'get_p_wave_proxy', 'get_qrs_proxy', 'get_beat_timeline_proxy'))
+                            'get_p_wave_proxy', 'get_qrs_proxy', 'get_beat_timeline_proxy',
+                            'detect_beats_xqrs_proxy'))
+# A second, unvalidated peak train can inform review but cannot by itself
+# satisfy the existing local-boundary requirement for event closure.
+CLOSURE_EVIDENCE_TOOLS = BOUNDARY_TOOLS - {'detect_beats_xqrs_proxy'}
 BOUNDARY_PROMPT = """Boundary evidence is enabled. Choose a range wholly inside the retained signal.
 Fractional seconds are allowed. For possible rhythm changes query surrounding beats on either lead.
 Use get_beat_timeline_proxy for aligned raw RR, P candidates and QRS morphology proxies.
+Use detect_beats_xqrs_proxy only as an experimental second peak detector; inspect raw peaks,
+RR cleaning mask and detector status before interpreting any rhythm change.
 Quality warnings and missing measurements express uncertainty. These measurements alone cannot establish AF termination.
 For a possible event end, use finish_review.proposed_end_s, with measured evidence IDs and an explanation.
 The runtime records the suggestion. It uses its separate event lifecycle to close tracked events.
@@ -21,6 +27,8 @@ The runtime records the suggestion. It uses its separate event lifecycle to clos
 EVENT_CONTROL_PROMPT = """Boundary evidence is enabled. Choose a range wholly inside the retained arrived signal.
 Fractional seconds are allowed. For a possible rhythm change query surrounding beats on either lead.
 Use get_beat_timeline_proxy for aligned raw RR, P candidates and QRS morphology proxies.
+Use detect_beats_xqrs_proxy only as an experimental second peak detector; compare its raw
+peak train with other available measurements before interpreting RR changes.
 There are two distinct final actions for a confirmed active event:
 - keep_event_open: end only this window's review. In reason, state either that available
   evidence supports continued AF/AFL or that the end remains uncertain, and say why.
@@ -37,6 +45,8 @@ call end_confirmed_event. This action does not create or confirm an event.
 """
 UNIFIED_PROMPT = """Boundary evidence is enabled. Use only arrived retained signal.
 Measure when useful, then use submit_event_decision as the only final action.
+detect_beats_xqrs_proxy is an unvalidated local second peak detector. Its raw peaks,
+RR mask and failure status are review evidence, not an AF end label.
 KEEP_OPEN means evidence supports continued AF/AFL; DEFER means termination remains
 uncertain; CLOSE requests closure of an already confirmed event. A low score,
 poor quality, or one proxy alone does not establish termination. For CLOSE,
@@ -272,7 +282,7 @@ class ReActReview:
                         if (active is None or active['confirmed_at_s'] is None
                                 or close.event_id != active['event_id']
                                 or not active['reported_intervals'][-1][0] < close.end_s <= end
-                                or not any(k in known and known[k]['tool'] in BOUNDARY_TOOLS
+                                or not any(k in known and known[k]['tool'] in CLOSURE_EVIDENCE_TOOLS
                                            and known[k]['status'] == 'ok'
                                            and known[k]['window_s'][0] <= close.end_s <= known[k]['window_s'][1]
                                            for k in close.evidence_ids)):
@@ -298,7 +308,7 @@ class ReActReview:
                             or not active['reported_intervals'][-1][0] < close.end_s <= end
                             or len(set(close.evidence_ids)) != len(close.evidence_ids)
                             or not set(close.evidence_ids) <= known.keys()
-                            or not any(known[k]['tool'] in BOUNDARY_TOOLS and known[k]['status'] == 'ok'
+                            or not any(known[k]['tool'] in CLOSURE_EVIDENCE_TOOLS and known[k]['status'] == 'ok'
                                        and known[k]['window_s'][0] <= close.end_s <= known[k]['window_s'][1]
                                        for k in close.evidence_ids)):
                         raise ValueError('Event closure requires an active event and successful local boundary evidence')
@@ -320,7 +330,7 @@ class ReActReview:
                         active = tracker.active
                         if (not active or active['confirmed_at_s'] is None
                                 or not max(session.context.origin_s, active['estimated_start_s']) < proposed <= end
-                                or not any(known[k]['tool'] in BOUNDARY_TOOLS and known[k]['status'] == 'ok'
+                                or not any(known[k]['tool'] in CLOSURE_EVIDENCE_TOOLS and known[k]['status'] == 'ok'
                                            and known[k]['window_s'][0] <= proposed < known[k]['window_s'][1]
                                            for k in finish.evidence_ids)):
                             raise ValueError('Proposed end needs an active event and successful local evidence at the boundary')

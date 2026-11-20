@@ -2,6 +2,7 @@
 from cardioagent.ecg_agent.schemas import ToolSpec, WindowArgs, BeatArgs, ProfileArgs, CachedScoreArgs, ShiftedScoreArgs
 import cardioagent.ecg_agent.tools.measurements as m
 from cardioagent.ecg_agent.tools.ecgfounder import score_ecgfounder, score_ecgfounder_shifted
+from cardioagent.ecg_agent.tools.xqrs import detect_beats_xqrs_proxy
 
 
 def build_registry(*, include_cached_model=False):
@@ -16,6 +17,7 @@ def build_registry(*, include_cached_model=False):
         version = '1.0.0' if name == 'assess_quality' else '1.0.1'
         registry.register(ToolSpec(name,description,args,handler,version=version))
     for name,description,handler in (
+        ('detect_beats_xqrs_proxy', 'Experimental elapsed-window WFDB XQRS peaks, raw RR and cleaning mask; not AF diagnosis.', detect_beats_xqrs_proxy),
         ('get_beat_timeline_proxy','Return time-aligned R peaks, raw RR, P candidates and QRS occupancy for local boundary review.',m.beat_timeline),
         ('get_p_wave_proxy','Experimental P-candidate amplitude and P-peak to R-peak distance.',m.p_wave),
         ('get_qrs_proxy','Experimental suprathreshold occupancy, not QRS duration or PVC count.',m.qrs),
@@ -23,9 +25,9 @@ def build_registry(*, include_cached_model=False):
         ('get_t_wave_proxy','Experimental T-candidate amplitude in a fixed search window.',m.t_wave),
         ('get_qt_proxy','Experimental QT/Bazett proxies using assumed Q onset and threshold T end.',m.qt),
     ):
-        version = '1.0.0' if name == 'get_beat_timeline_proxy' else '1.0.1'
+        version = '0.1.0' if name == 'detect_beats_xqrs_proxy' else '1.0.0' if name == 'get_beat_timeline_proxy' else '1.0.1'
         registry.register(ToolSpec(name,description,WindowArgs,handler,experimental=True,version=version,
-                                  source='Adapted from ECG-Scroll (MIT); local corrected proxy semantics'))
+                                  source='WFDB XQRS adapted from ECG-Scroll (MIT); causal window-local' if name == 'detect_beats_xqrs_proxy' else 'Adapted from ECG-Scroll (MIT); local corrected proxy semantics'))
     from . import physio
     for name, description, handler in (
         ('detect_beats_featuredb', 'Experimental local R peaks and raw RR from physical ECG; not a diagnosis.', physio.detect_beats),
