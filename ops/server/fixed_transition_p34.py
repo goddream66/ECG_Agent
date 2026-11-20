@@ -100,9 +100,12 @@ def prompt_view(case, arm):
 
 
 def infer_one(model, case, arm):
-    view = prompt_view(case, arm)
-    allowed = {e['id'] for field in ('primary_scores', 'rr_measurements', 'quality_hints')
-               for e in view[field] if e['status'] == 'ok'}
+    return judge_view(model, prompt_view(case, arm))
+
+
+def judge_view(model, view):
+    allowed = {e['id'] for entries in view.values() if isinstance(entries, list)
+               for e in entries if e['status'] == 'ok'}
     messages = [{'role': 'system', 'content': SYSTEM},
                 {'role': 'user', 'content': json.dumps(view, allow_nan=False) +
                  '\nValid evidence IDs: ' + ', '.join(sorted(allowed))}]
