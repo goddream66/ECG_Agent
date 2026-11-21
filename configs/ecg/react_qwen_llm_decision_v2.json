@@ -1,0 +1,17 @@
+{
+  "provider": "transformers",
+  "model_path": "/data/1shared/gaojiajun/LLM_Model/Qwen3-8B",
+  "device": "cuda:0",
+  "max_new_tokens": 1024,
+  "max_rounds": 12,
+  "llm_tool_max_calls": 12,
+  "history_windows": 6,
+  "memory_write": true,
+  "memory_retrieve": true,
+  "boundary_tools": true,
+  "event_control": true,
+  "unified_event_decision": true,
+  "separate_final_decision": true,
+  "llm_window_interpretation": true,
+  "rule_safety_fallback": false
+}

@@ -308,7 +308,7 @@
     },
     {
       "name": "get_rate_rhythm",
-      "description": "Return raw RR and optional cleaning mask/statistics; no AF label.",
+      "description": "Return raw RR and optional cleaning mask/statistics. Lower RR-CV means more regular intervals. Depends on R-peak detection; no AF label.",
       "parameters": {
         "additionalProperties": false,
         "properties": {
@@ -454,7 +454,7 @@
     },
     {
       "name": "get_feature_profile",
-      "description": "Coarse RR variability bins to locate suspicious elapsed intervals.",
+      "description": "Compare RR variability across elapsed sub-windows. Shares peak information with RR tools; not independent rhythm confirmation.",
       "parameters": {
         "additionalProperties": false,
         "properties": {

@@ -74,13 +74,17 @@ def run_job(job):
                 load_began = perf_counter()
                 reviewer = ReActReview(build_chat_model(job['llm']),
                     max_rounds=job['llm'].get('max_rounds', 5),
+                    llm_tool_max_calls=job['llm'].get('llm_tool_max_calls'),
+                    llm_window_interpretation=job['llm'].get('llm_window_interpretation', False),
+                    investigation_checkpoint=job['llm'].get('investigation_checkpoint', False),
                     history_windows=job['llm'].get('history_windows', 6),
+                    memory_write=job['llm'].get('memory_write', False),
+                    memory_retrieve=job['llm'].get('memory_retrieve', False),
                     boundary_tools=job['llm'].get('boundary_tools', False),
                     event_control=job['llm'].get('event_control', False),
                     unified_event_decision=job['llm'].get('unified_event_decision', False),
                     separate_final_decision=job['llm'].get('separate_final_decision', False),
                     rule_safety_fallback=job['llm'].get('rule_safety_fallback', False),
-                    scheduled_evidence=job['llm'].get('scheduled_evidence', False),
                     live_scoring=job['mode'] == 'live')
                 llm_load_ms = (perf_counter() - load_began) * 1000
             if job['mode'] == 'fixed':
@@ -220,8 +224,9 @@ def run(args):
                   'selection': list(tasks), 'duration_s': args.duration_s,
                   'variants': [(name, cfg.to_dict(), policy) for name, cfg, policy in selected_variants]}
     if llm_config is not None:
-        from cardioagent.ecg_agent.harness.react import PROMPT
-        provenance['llm'] = dict(config=llm_config, prompt_sha256=digest(PROMPT))
+        from cardioagent.ecg_agent.harness.react import PROMPT, WINDOW_PROMPT
+        provenance['llm'] = dict(config=llm_config, prompt_sha256=digest(
+            WINDOW_PROMPT if llm_config.get('llm_window_interpretation') else PROMPT))
         if llm_config.get('provider') == 'transformers':
             model_root = Path(llm_config['model_path'])
             provenance['llm']['model_files'] = {p.name: digest(p) for p in sorted(model_root.iterdir())

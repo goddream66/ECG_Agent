@@ -15,6 +15,7 @@ from cardioagent.ecg_agent.harness.logging import JsonLogs
 from cardioagent.ecg_agent.harness.react import ReActReview
 from cardioagent.ecg_agent.llm.contracts import ModelReply
 from cardioagent.ecg_agent.llm.providers import EndpointModel, parse_qwen_tool_reply
+from cardioagent.ecg_agent.memory.evidence import EvidenceLedger
 from cardioagent.ecg_agent.memory.events import EventTracker
 from cardioagent.ecg_agent.policies.event_rules import EventConfig
 from cardioagent.ecg_agent.experiments.runner import configured_variants
@@ -167,7 +168,7 @@ class ReActTests(unittest.TestCase):
                 result,resumed=run_job(job)
                 self.assertFalse(resumed)
                 self.assertEqual(result['counts']['llm_calls'],4)
-                self.assertEqual(result['counts']['calls_score_ecgfounder'],2)
+                self.assertEqual(result['counts'].get('calls_score_ecgfounder', 0), 0)
                 self.assertEqual(result['counts']['calls_assess_quality'],2)
                 self.assertEqual(result['execution']['actual_model_calls'],0)
                 self.assertEqual(len(json.loads(model.inputs[2][1]['content'])['recent_windows']),1)
@@ -178,7 +179,112 @@ class ReActTests(unittest.TestCase):
             self.assertTrue((folder/'llm_steps.jsonl').exists())
             evidence=[json.loads(x) for x in (folder/'evidence.jsonl').read_text().splitlines()]
             self.assertTrue(all(x['lead']=='ECG1' for x in evidence))
-            self.assertEqual(len({x['evidence_id'] for x in evidence}),4)
+            self.assertEqual(len({x['evidence_id'] for x in evidence}),2)
+            self.assertEqual({x['tool'] for x in evidence}, {'assess_quality'})
+
+    def test_runner_retrieves_evidence_outside_inline_history_and_can_cite_it(self):
+        from tests.runtime.test_event_checkpoints import EventCheckpointTests
+        from cardioagent.ecg_agent.experiments.runner import run_job
+
+        test = self
+
+        class RetrievalModel:
+            def complete(self, messages, tools):
+                state = json.loads(messages[1]['content'])
+                test.assertEqual(state['recent_windows'], [])
+                results = [json.loads(m['content']) for m in messages if m['role'] == 'tool']
+                if state['window_s'][0] == 0:
+                    if not results:
+                        return reply('score_ecgfounder', {'lead': 'ECG1', 'start_s': 0., 'end_s': 10.})
+                    return reply('finish_review', {'reason': 'Save available evidence', 'evidence_ids': []})
+                if not results:
+                    return reply('retrieve_memory', {'lead': 'ECG1', 'tool': 'score_ecgfounder', 'limit': 1})
+                [result] = results
+                matches = result['matches']
+                [measurement] = matches
+                test.assertEqual(measurement['window_s'], [0., 10.])
+                test.assertEqual(measurement['available_at_s'], 10.)
+                test.assertEqual(measurement['status'], 'ok')
+                return reply('finish_review', {'reason': 'Reviewed prior AF score',
+                                               'evidence_ids': [measurement['evidence_id']]})
+
+        with TemporaryDirectory() as d:
+            job = EventCheckpointTests().make_job(Path(d))
+            job.update(policy='event-react',
+                       llm={'provider': 'test', 'memory_retrieve': True, 'history_windows': 0})
+            raw = SimpleNamespace(fs=250, sig_name=('ECG1', 'ECG2'), sig_len=5000,
+                                  p_signal=np.ones((5000, 2)), units=('mV', 'mV'))
+            with patch('cardioagent.ecg_agent.llm.providers.build_chat_model', return_value=RetrievalModel()), \
+                 patch('cardioagent.ecg_agent.agent.wfdb.rdrecord', return_value=raw):
+                result, _ = run_job(job)
+            self.assertEqual(result['counts']['llm_calls'], 4)
+            self.assertEqual(result['counts']['tool_calls'], 1)
+            rows = [json.loads(x) for x in (Path(job['target'])/'llm_steps.jsonl').read_text().splitlines()]
+            retrievals = [row for row in rows if row.get('action') == 'retrieve_memory']
+            self.assertEqual([row['count'] for row in retrievals], [1])
+            self.assertEqual(rows[-2]['status'], 'stopped')
+            self.assertEqual(rows[-2]['arguments']['evidence_ids'], retrievals[0]['evidence_ids'])
+
+    def test_retrieval_checks_cursor_identity_and_close_still_needs_local_evidence(self):
+        test = self
+        tracker = EventTracker(EventConfig(enter_windows=1), llm_closure=True)
+        tracker.observe(0., 10., 'support')
+        tracker.observe(10., 20., 'support', close_request={
+            'event_id': 1, 'end_s': 15., 'evidence_ids': ['boundary'], 'reason': 'transition'})
+        tracker.observe(20., 30., 'support')
+        t = np.arange(10000) / 250
+        wave = Waveform(np.column_stack([np.sin(2*np.pi*8*t)]*2), 250,
+                        ('ECG1', 'ECG2'), ('mV', 'mV'))
+        identity = EvidenceContext('run', 'task', 'record')
+        ledger = EvidenceLedger(identity)
+        session = ToolSession(ToolContext(wave, 0, 40), max_calls=1, evidence_context=identity,
+                              cached_model=lambda *_: (np.ones(5000, dtype=np.float32), lambda _: (.9, .1)))
+        primary = session.call('score_ecgfounder', {'lead': 'ECG1', 'start_s': 30., 'end_s': 40.})
+        ledger.append(primary)
+        ledger.append(dict(primary, evidence_id='past', tool='get_rate_rhythm',
+                           window_s=[10., 20.], available_at_s=20., result={'rr_intervals_ms': [800.]}))
+        ledger.append(dict(primary, evidence_id='late', tool='get_rate_rhythm',
+                           window_s=[10., 20.], available_at_s=40., result={'rr_intervals_ms': [900.]}))
+
+        class TransitionModel:
+            def complete(self, messages, tools):
+                results = [json.loads(m['content']) for m in messages if m['role'] == 'tool']
+                if not results:
+                    return reply('retrieve_memory', {'end_s': 41.})
+                if len(results) == 1:
+                    test.assertEqual(results[0]['status'], 'memory_retrieval_rejected')
+                    return reply('retrieve_memory', {'scope': 'events', 'event_id': 1})
+                if len(results) == 2:
+                    [event] = results[1]['matches']
+                    test.assertEqual(event['event_id'], 1)
+                    test.assertEqual(event['closed_at_s'], 20.)
+                    event['reported_intervals'].clear()
+                    return reply('retrieve_memory', {'start_s': 10., 'end_s': 20., 'tool': 'get_rate_rhythm'})
+                test.assertEqual([row['evidence_id'] for row in results[2]['matches']], ['past'])
+                if messages[-1]['content'].startswith('Final action rejected:'):
+                    return reply('submit_event_decision', {'decision': 'DEFER', 'event_id': 2,
+                                 'end_s': None, 'reason': 'Need current measurements', 'evidence_ids': ['past']})
+                if 'finish_measurements' in {t['function']['name'] for t in tools}:
+                    return reply('finish_measurements', {})
+                test.assertEqual([t['function']['name'] for t in tools], ['submit_event_decision'])
+                return reply('submit_event_decision', {'decision': 'CLOSE', 'event_id': 2,
+                             'end_s': 30., 'reason': 'Try historical evidence', 'evidence_ids': ['past']})
+
+        review = ReActReview(TransitionModel(), boundary_tools=True, event_control=True,
+                             unified_event_decision=True, separate_final_decision=True,
+                             memory_retrieve=True)
+        logs = []
+        with self.assertRaisesRegex(ValueError, 'this review record and task'):
+            review.review(None, primary, 'ECG2', tracker, EventConfig(), session, lambda *_: None,
+                          call_window=session.call, ledger=EvidenceLedger(EvidenceContext('run', 'task', 'other')))
+        review.review(None, primary, 'ECG2', tracker, EventConfig(), session, lambda _, row: logs.append(row),
+                      call_window=session.call, ledger=ledger)
+        self.assertEqual(len(session.calls), 1)
+        self.assertIsNone(review.pending_close)
+        self.assertEqual(review.last_action['decision'], 'DEFER', logs)
+        self.assertEqual(review.last_action['evidence_ids'], ['past'])
+        self.assertEqual(tracker.events[0]['reported_intervals'], [[0., 15.]])
+        self.assertTrue(any('successful local boundary evidence' in row.get('error_message', '') for row in logs))
 
     def test_boundary_mode_executes_fractional_lookback_and_logs_end_proposal(self):
         from tests.runtime.test_ecg_toolkit import measured
@@ -215,6 +321,107 @@ class ReActTests(unittest.TestCase):
         self.assertEqual(proposal['cursor_s'], 30.)
         self.assertEqual(proposal['evidence_ids'], [result['evidence_id']])
         self.assertEqual(tracker.state, 'ACTIVE')
+
+    def test_explicit_memory_write_carries_measurement_into_next_window(self):
+        from tests.runtime.test_ecg_toolkit import measured
+
+        test = self
+        measurement_args = {'lead': 'ECG2', 'start_s': 0., 'end_s': 10.}
+
+        class MemoryModel:
+            saved = None
+
+            def complete(self, messages, tools):
+                state = json.loads(messages[1]['content'])
+                if state['window_s'] == [10., 20.]:
+                    [previous] = state['recent_windows']
+                    selected, summary = previous['acquired'][1:]
+                    test.assertEqual(selected['evidence_id'], self.saved['evidence_id'])
+                    test.assertEqual(selected['result'], self.saved['result'])
+                    test.assertNotIn('result', summary)
+                    return reply('finish_review', {'reason': 'Use prior RR',
+                                                   'evidence_ids': [self.saved['evidence_id']]})
+                results = [json.loads(m['content']) for m in messages if m['role'] == 'tool']
+                if not results:
+                    return reply('get_rate_rhythm', measurement_args)
+                if len(results) == 1:
+                    self.saved = results[0]
+                    return reply('detect_beats', measurement_args)
+                if len(results) in (2, 3):
+                    return reply('write_memory', {'evidence_id': self.saved['evidence_id']})
+                test.assertEqual([r['status'] for r in results[-2:]],
+                                 ['memory_written', 'memory_already_written'])
+                return reply('finish_review', {'reason': 'Review finished', 'evidence_ids': []})
+
+        model = MemoryModel()
+        review = ReActReview(model, boundary_tools=True, memory_write=True, history_windows=1)
+        t = np.arange(5000) / 250
+        wave = Waveform(np.column_stack([np.sin(2*np.pi*8*t)]*2), 250,
+                        ('ECG1','ECG2'), ('mV','mV'))
+        logs = []
+        for start in (0., 10.):
+            session = ToolSession(ToolContext(wave, 0, start + 10), max_calls=3,
+                                  cached_model=lambda *_: (np.ones(5000, dtype=np.float32), lambda _: (.9,.1)),
+                                  evidence_context=EvidenceContext('run','task','record'))
+            primary = session.call('score_ecgfounder', {'lead': 'ECG1', 'start_s': start, 'end_s': start + 10})
+            with patch('cardioagent.ecg_agent.tools.algorithms.measure', side_effect=measured):
+                review.review(lambda *_: None, primary, 'ECG2', EventTracker(),
+                              EventConfig(), session, lambda _, row: logs.append(row), call_window=session.call)
+            self.assertEqual(len(session.calls), 3 if start == 0. else 1)
+            if start == 0.:
+                self.assertEqual(session.calls[1]['result'], model.saved['result'])
+        self.assertEqual(review.history[0]['window_s'], [10., 20.])
+        self.assertNotIn(model.saved['evidence_id'], review.history[0]['evidence_ids'])
+        writes = [row for row in logs if row.get('action') == 'write_memory']
+        self.assertEqual([row['cursor_s'] for row in writes], [10., 10.])
+        self.assertEqual(logs[-2]['status'], 'stopped')
+
+    def test_write_memory_checks_visibility_and_preserves_final_decision(self):
+        test = self
+        params = {'lead': 'ECG2', 'start_s': 0., 'end_s': 10.}
+
+        class ActionModel:
+            def complete(self, messages, tools):
+                names = {t['function']['name'] for t in tools}
+                results = [json.loads(m['content']) for m in messages if m['role'] == 'tool']
+                if not results:
+                    return reply('write_memory', {'evidence_id': 'forged'})
+                if len(results) == 1:
+                    test.assertEqual(results[0]['status'], 'memory_write_rejected')
+                    return reply('get_rate_rhythm', params)
+                if len(results) == 2:
+                    test.assertEqual(names, {'write_memory', 'finish_measurements'})
+                    test.assertEqual(results[1]['status'], 'error')
+                    return reply('write_memory', {'evidence_id': results[1]['evidence_id']})
+                test.assertEqual(results[2]['status'], 'memory_write_rejected')
+                if len(results) == 3:
+                    primary = json.loads(messages[1]['content'])['primary_evidence']
+                    return reply('write_memory', {'evidence_id': primary['evidence_id']})
+                test.assertEqual(names, {'submit_event_decision'})
+                test.assertEqual(results[3]['status'], 'memory_written')
+                return reply('submit_event_decision', {'decision': 'DEFER', 'event_id': None,
+                             'end_s': None, 'evidence_ids': ['E1'], 'reason': 'still uncertain'})
+
+        t = np.arange(2500) / 250
+        wave = Waveform(np.column_stack([np.sin(2*np.pi*8*t)]*2), 250,
+                        ('ECG1','ECG2'), ('mV','mV'))
+        session = ToolSession(ToolContext(wave, 0, 10), max_calls=2,
+                              cached_model=lambda *_: (np.ones(5000, dtype=np.float32), lambda _: (.9,.1)),
+                              evidence_context=EvidenceContext('run','task','record'))
+        primary = session.call('score_ecgfounder', dict(params, lead='ECG1'))
+        review = ReActReview(ActionModel(), boundary_tools=True, event_control=True,
+                             unified_event_decision=True, separate_final_decision=True,
+                             memory_write=True)
+        logs = []
+        with patch('cardioagent.ecg_agent.tools.algorithms.measure', side_effect=RuntimeError('detector failed')):
+            review.review(lambda *_: None, primary, 'ECG2', EventTracker(),
+                          EventConfig(), session, lambda _, row: logs.append(row), call_window=session.call)
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(review.counts['llm_calls'], 5, logs)
+        self.assertEqual(review.last_action['decision'], 'DEFER')
+        self.assertEqual([row['status'] for row in logs if row.get('action') == 'write_memory'],
+                         ['memory_write_rejected', 'memory_write_rejected', 'memory_written'])
+        self.assertNotIn('result', review.history[0]['acquired'][1])
 
     def test_qwen_close_event_changes_reported_interval(self):
         from tests.runtime.test_ecg_toolkit import measured
@@ -306,7 +513,7 @@ class ReActTests(unittest.TestCase):
         self.assertNotIn('Use finish_review when acquired evidence is enough', model.inputs[0][0]['content'])
         self.assertNotIn('event boundaries.', model.inputs[0][0]['content'])
 
-    def test_unified_decision_reads_scheduled_evidence_and_defers(self):
+    def test_unified_decision_can_defer_with_prior_evidence(self):
         class DecisionModel(ScriptModel):
             def complete(self, messages, tools):
                 self.final_tools = [t['function']['name'] for t in tools]
@@ -478,7 +685,7 @@ class ReActTests(unittest.TestCase):
             updates = [json.loads(line) for line in (Path(job['target'])/'event_updates.jsonl').read_text().splitlines()]
             self.assertEqual(updates[-1]['event_update']['kind'], 'llm_close')
 
-    def test_scheduled_window_evidence_allows_confirmed_event(self):
+    def test_qwen_can_measure_only_backup_lead_or_skip_a_window(self):
         from tests.runtime.test_event_checkpoints import EventCheckpointTests
         from cardioagent.ecg_agent.experiments.runner import run_job
 
@@ -486,9 +693,18 @@ class ReActTests(unittest.TestCase):
             job = EventCheckpointTests().make_job(Path(d))
             job.update(policy='event-react', mode='cached',
                        llm={'provider':'test', 'boundary_tools':True,
-                            'scheduled_evidence':True, 'event_control':True},
+                            'event_control':True, 'unified_event_decision':True,
+                            'scheduled_evidence':True},  # Archived option must not trigger acquisition.
                        config=EventConfig(enter_windows=1).to_dict())
-            model = ScriptModel([reply('keep_event_open', {'reason':'keep open', 'evidence_ids':[]})]*2)
+            args = {'lead': 'ECG2', 'start_s': 0., 'end_s': 10.}
+            model = ScriptModel([
+                reply('assess_quality', args),
+                reply('score_ecgfounder', args),
+                reply('submit_event_decision', {'decision': 'DEFER', 'event_id': None, 'end_s': None,
+                                                'reason': 'First window measured', 'evidence_ids': []}),
+                reply('submit_event_decision', {'decision': 'DEFER', 'event_id': 1, 'end_s': None,
+                                                'reason': 'Wait for more evidence', 'evidence_ids': []}),
+            ])
             t = np.arange(5000) / 250
             raw = SimpleNamespace(fs=250, sig_name=('ECG1','ECG2'), sig_len=5000,
                                   p_signal=np.column_stack([np.sin(2*np.pi*8*t)]*2),
@@ -498,11 +714,19 @@ class ReActTests(unittest.TestCase):
                 result, _ = run_job(job)
             self.assertEqual(result['events'][0]['confirmed_at_s'], 10.)
             self.assertTrue(result['events'][0]['right_censored'])
-            first_state = json.loads(model.inputs[0][1]['content'])
-            self.assertEqual(first_state['scheduled_window_interpretation']['decision'], 'support')
-            acquisitions = [json.loads(line) for line in
-                            (Path(job['target'])/'acquisitions.jsonl').read_text().splitlines()]
-            self.assertIn('scheduled_window_evidence', {row['trigger_reason'] for row in acquisitions})
+            for index in (0, 3):
+                state = json.loads(model.inputs[index][1]['content'])
+                self.assertIsNone(state['primary_evidence'])
+                self.assertEqual(state['already_acquired_evidence'], [])
+                self.assertEqual(state['remaining_tool_calls'], 4)
+            def rows(name):
+                return [json.loads(line) for line in
+                        (Path(job['target'])/f'{name}.jsonl').read_text().splitlines()]
+            self.assertEqual([(r['tool'], r['lead']) for r in rows('evidence')],
+                             [('assess_quality', 'ECG2'), ('score_ecgfounder', 'ECG2')])
+            self.assertEqual({r['trigger_reason'] for r in rows('acquisitions')}, {'llm_review_request'})
+            self.assertEqual([r['decision'] for r in rows('window_trace')], ['support', 'unavailable'])
+            self.assertEqual(result['counts']['scored_seconds'], 10.)
 
     def test_boundary_runner_scores_a_fractional_window_without_reading_future(self):
         from tests.runtime.test_event_checkpoints import EventCheckpointTests
@@ -524,12 +748,12 @@ class ReActTests(unittest.TestCase):
                  patch('cardioagent.ecg_agent.agent.wfdb.rdrecord', return_value=raw), \
                  patch.object(runner, '_MODEL', return_value=(.9, .1)) as score:
                 result, _ = runner.run_job(job)
-            self.assertEqual(score.call_count, 3)
+            self.assertEqual(score.call_count, 1)
             self.assertEqual(score.call_args.args[0].shape, (5000,))
             evidence = [json.loads(line) for line in (Path(job['target'])/'evidence.jsonl').read_text().splitlines()]
             self.assertEqual(evidence[-1]['window_s'], [6.1, 16.1])
             self.assertEqual(evidence[-1]['available_at_s'], 20.)
-            self.assertEqual(result['counts']['tool_calls'], 3)
+            self.assertEqual(result['counts']['tool_calls'], 1)
 
     def test_history_is_bounded_and_tool_failure_is_unknown(self):
         action=reply('assess_quality',{'lead':'ECG1','start_s':0.,'end_s':10.})

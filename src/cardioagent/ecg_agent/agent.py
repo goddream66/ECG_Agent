@@ -20,7 +20,8 @@ from cardioagent.ecg_agent.data.preprocessing import invalid_spans, preprocess_w
 def replay_event_record(cache, record, task, channel, config, score, logs, context,
                         *, policy='event-adaptive', raw_root=None, reviewer=None, rule_review=None, source_fs=SOURCE_FS):
     """The scorer is invoked only inside a requested current-window model tool."""
-    event_control = policy == 'event-react' and getattr(reviewer, 'event_control', False)
+    react = policy == 'event-react'
+    event_control = react and getattr(reviewer, 'event_control', False)
     tracker = EventTracker(config, llm_closure=event_control,
                            rule_safety_fallback=event_control and
                            getattr(reviewer, 'rule_safety_fallback', False))
@@ -44,14 +45,17 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
         if raw.fs != source_fs or tuple(raw.sig_name) != CHANNELS or raw.sig_len != record['source_record_samples']:
             raise ValueError('Raw data/cache coordinates disagree')
     secondary = next(x for x in CHANNELS if x != channel)
-    boundary_review = policy == 'event-react' and getattr(reviewer, 'boundary_tools', False)
-    scheduled_evidence = policy == 'event-react' and getattr(reviewer, 'scheduled_evidence', False)
+    boundary_review = react and getattr(reviewer, 'boundary_tools', False)
+    llm_interprets = react and getattr(reviewer, 'llm_window_interpretation', False)
     retained_samples = 120 * source_fs
     cursor = float(task['start_s'])
     for block in _arrivals(Path(cache), record, CHANNELS, task['start_s'], task['end_s'], source_fs=source_fs):
         row = block[channel][0]
         start, cursor = row['start_sample'] / source_fs, row['end_sample'] / source_fs
         primary = None
+        close_request = None
+        llm_action = None
+        audit = {}
         evidence_ids = []
         calls = []
         decision_threshold = config.threshold_for(tracker)
@@ -84,16 +88,15 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
                     return None, lambda _: None
                 return preprocess_window(values, source_fs), lambda x: score(lead, x, None)
 
+            initial_calls = 0 if react else 1
+            llm_limit = getattr(reviewer, 'llm_tool_max_calls', None) if react else None
             session = ToolSession(ToolContext(w, origin, cursor),
-                                  max_calls=1 + config.review_budget * (2 if scheduled_evidence else 1),
+                                  max_calls=llm_limit if llm_limit is not None else initial_calls + config.review_budget,
                                   cached_model=model_window, evidence_context=context, allow_experimental=boundary_review)
 
-            scheduled = False
             def call_window(tool, args):
                 lead, a, b = args['lead'], args['start_s'], args['end_s']
-                if scheduled:
-                    trigger = 'scheduled_window_evidence'
-                elif policy == 'event-react' and primary is not None:
+                if react:
                     trigger = 'llm_review_request'
                 elif primary is None:
                     trigger = 'scheduled_primary_score'
@@ -125,26 +128,28 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
             def call(tool, lead):
                 return call_window(tool, {'lead': lead, 'start_s': start, 'end_s': cursor})
 
-            primary = call('score_ecgfounder', channel)
-            if legacy is not None:
-                decision, checked, reason = decide(call, primary, secondary, config.threshold,
-                                                   legacy, 'dual', config.review_budget)
-            elif policy == 'event-react':
-                seeded = None
-                if scheduled_evidence:
-                    scheduled = True
-                    try:
-                        seeded = decide_event(call, primary, secondary, tracker, config)
-                    finally:
-                        scheduled = False
-                decision, checked, reason = reviewer.review(call, primary, secondary, tracker, config,
+            if react:
+                decision, checked, reason = reviewer.review(call, None, secondary, tracker, config,
                                                             session, logs.emit,
+                                                            window_s=(start, cursor), primary_lead=channel,
                                                             **({'call_window': call_window} if boundary_review else {}),
-                                                            seeded_decision=seeded)
+                                                            **({'ledger': ledger} if llm_interprets or getattr(reviewer, 'memory_retrieve', False) else {}))
+                llm_action = deepcopy(getattr(reviewer, 'last_action', None))
+                if event_control:
+                    close_request = reviewer.pending_close
             else:
-                review = rule_review if rule_review is not None else decide_event
-                decision, checked, reason = review(call, primary, secondary, tracker, config)
+                primary = call('score_ecgfounder', channel)
+                if legacy is not None:
+                    decision, checked, reason = decide(call, primary, secondary, config.threshold,
+                                                       legacy, 'dual', config.review_budget)
+                else:
+                    review = rule_review if rule_review is not None else decide_event
+                    decision, checked, reason = review(call, primary, secondary, tracker, config)
             calls = session.calls
+            if react:
+                primary = next((r for r in reversed(calls)
+                                if r['tool'] == 'score_ecgfounder' and r['lead'] == channel
+                                and r['window_s'] == [start, cursor]), None)
             evidence_ids = [r['evidence_id'] for r in calls]
             for result in calls:
                 totals['tool_calls'] += 1
@@ -154,24 +159,42 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
                     totals['model_calls'] += result['status'] == 'ok' and not result['cached']
                 else:
                     totals['other_tool_ms'] += result['duration_ms']
-            totals['extra_tool_calls'] += max(0, len(calls) - 1)
-            if primary['status'] == 'ok':
+            totals['extra_tool_calls'] += len(calls) - initial_calls
+            if (react and any(r['tool'] == 'score_ecgfounder' and r['status'] == 'ok'
+                              and r['window_s'] == [start, cursor] for r in calls)
+                    or not react and primary['status'] == 'ok'):
                 totals['scored_seconds'] += cursor - start
+        acquired_ids = evidence_ids
+        if llm_interprets:
+            metadata = llm_action or {}
+            evidence_ids = metadata.get('evidence_ids', [])
+            audit = dict(decision_source=metadata.get('decision_source', 'incomplete_window'),
+                         **({'evidence_focus': deepcopy(reviewer.evidence_focus)}
+                            if getattr(reviewer, 'investigation_checkpoint', False) else {}),
+                         interpretation=decision, action=metadata.get('action'),
+                         submitted_event_id=metadata.get('event_id'), submitted_end_s=metadata.get('end_s'),
+                         reason=metadata.get('reason', reason), acquired_evidence_ids=acquired_ids)
         assessment = ledger.assessment(decision, reason, evidence_ids, cursor, checked=checked)
+        assessment.update(audit)
         logs.emit('assessments', dict(assessment, task_id=task['task_id'], decision_threshold=decision_threshold))
         if legacy is not None:
             observation = legacy.observe(start, cursor, decision, checked, evidence_ids)
             state = (observation or {}).get('state', 'idle')
         else:
             observation = tracker.observe(start, cursor, decision, checked, evidence_ids,
-                                          close_request=reviewer.pending_close if event_control and primary else None)
+                                          close_request=close_request)
             state = tracker.state
         if observation is not None:
+            observation.update(audit)
+            update = observation.get('event_update')
+            if update and update['kind'].startswith('rule_safety'):
+                update['decision_source'] = 'rule_fallback'
+            elif update and audit:
+                update.update(audit)
             logs.emit('event_updates', dict(deepcopy(observation), task_id=task['task_id']))
-        logs.emit('window_trace', {'task_id': task['task_id'], 'start_s': start, 'end_s': cursor,
+        logs.emit('window_trace', {**audit, 'task_id': task['task_id'], 'start_s': start, 'end_s': cursor,
                                   'cursor_s': cursor, 'decision': decision, 'reason': reason, 'state': state,
-                                  'llm_action': deepcopy(reviewer.last_action)
-                                      if policy == 'event-react' and hasattr(reviewer, 'last_action') else None,
+                                  'llm_action': llm_action,
                                   'decision_threshold': decision_threshold,
                                   'af_score': primary['result'].get('af_score') if primary else None,
                                   'afl_score': primary['result'].get('afl_score') if primary else None,

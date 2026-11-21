@@ -144,6 +144,23 @@ class EventTracker:
                 'evidence_ids': list(evidence_ids), 'event_update': update,
                 'stop_review': True, 'legal_actions': ['WAIT_NEXT']}
 
+    def retrieve(self, start_s, end_s, *, available_through_s, limit, event_id=None):
+        """Return snapshots of already tracked events overlapping the requested time."""
+        if self.cursor is not None and self.cursor > available_through_s:
+            raise ValueError('Event memory is ahead of this review')
+        matches = []
+        for event in reversed(self.events):
+            observed_end = event.get('closed_at_s', self.cursor)
+            if (event['candidate_start_s'] >= end_s or observed_end <= start_s
+                    or observed_end > available_through_s
+                    or (event_id is not None and event['event_id'] != event_id)):
+                continue
+            matches.append(deepcopy({key: value[-6:] if isinstance(value, list) and key.endswith('_intervals')
+                                     else value for key, value in event.items()}))
+            if len(matches) == limit:
+                break
+        return matches
+
     def finish(self, cursor):
         if self.cursor is not None and cursor < self.cursor:
             raise ValueError('Stream end precedes observation')

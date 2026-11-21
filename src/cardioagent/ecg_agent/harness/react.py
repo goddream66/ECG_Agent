@@ -1,4 +1,4 @@
-"""Bounded ReAct review runner; the provider chooses tools, existing rules judge evidence."""
+"""Bounded ReAct review with selectable rule or model interpretation."""
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -6,8 +6,10 @@ from time import perf_counter
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from cardioagent.ecg_agent.policies.rule_review import decide_event
+from .event_decision import WindowEventDecision, overlaps_current, validate_grounding
 
 PROMPT = Path(__file__).resolve().parents[1] / 'prompts/react_review_v1.txt'
+WINDOW_PROMPT = PROMPT.with_name('react_window_decision_v2.txt')
 ALLOWED = frozenset(('score_ecgfounder', 'assess_quality'))
 BOUNDARY_TOOLS = frozenset(('detect_beats', 'get_rate_rhythm', 'get_feature_profile',
                             'get_p_wave_proxy', 'get_qrs_proxy', 'get_beat_timeline_proxy',
@@ -82,11 +84,69 @@ class EventDecision(BaseModel):
     reason: str = Field(min_length=1, max_length=4096)
 
 
+class WriteMemory(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    evidence_id: str = Field(min_length=1, description='Exact ID of a successful measurement shown in this review')
+
+
+class RetrieveMemory(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    scope: Literal['evidence', 'events'] = 'evidence'
+    start_s: float = Field(default=0., ge=0, allow_inf_nan=False)
+    end_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    lead: str | None = Field(default=None, min_length=1, description='Evidence scope only')
+    tool: str | None = Field(default=None, min_length=1, description='Evidence scope only')
+    event_id: int | None = Field(default=None, ge=1, description='Events scope only')
+    limit: int = Field(default=3, ge=1, le=6)
+
+
+class EvidenceFocus(BaseModel):
+    """An LLM-authored investigation question, not a rule-based rhythm label."""
+    model_config = ConfigDict(extra='forbid', strict=True, str_strip_whitespace=True)
+    issue: Literal['possible_onset', 'possible_end', 'possible_conflict',
+                   'quality_issue', 'insufficient_evidence', 'no_specific_issue']
+    observation: str = Field(min_length=1, max_length=768)
+    evidence_ids: list[str] = Field(min_length=1, max_length=8)
+    unresolved_question: str = Field(min_length=1, max_length=512)
+    next_tool: str = Field(min_length=1, max_length=64,
+                           description='Name of a permitted measurement tool, retrieve_memory, or none')
+    target_lead: str | None = None
+    target_start_s: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    target_end_s: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    expected_information: str = Field(min_length=1, max_length=512)
+
+
+def _retrieve_memory(query, ledger, tracker, start, cursor):
+    end_s = cursor if query.end_s is None else query.end_s
+    if not query.start_s < end_s <= cursor:
+        raise ValueError('Requested memory interval must end at or before the review cursor')
+    if query.scope == 'events':
+        if query.lead is not None or query.tool is not None:
+            raise ValueError('Lead and tool filters require evidence scope')
+        return tracker.retrieve(query.start_s, end_s, available_through_s=start,
+                                limit=query.limit, event_id=query.event_id)
+    if query.event_id is not None:
+        raise ValueError('Event ID filter requires events scope')
+    return ledger.retrieve(query.start_s, end_s, available_through_s=start,
+                           limit=query.limit, lead=query.lead, tool=query.tool)
+
+
+def _tool_exchange(messages, step, name, args, result):
+    call_id = f'call-{step}'
+    messages.append({'role': 'assistant', 'content': None, 'tool_calls': [
+        {'id': call_id, 'type': 'function', 'function': {
+            'name': name, 'arguments': json.dumps(args, allow_nan=False)}}]})
+    messages.append({'role': 'tool', 'tool_call_id': call_id,
+                     'content': json.dumps(result, allow_nan=False)})
+
+
 class ReActReview:
     def __init__(self, model, *, max_rounds=5, history_windows=6, boundary_tools=False,
-                 live_scoring=False, event_control=False, scheduled_evidence=False,
+                 live_scoring=False, event_control=False,
                  unified_event_decision=False, separate_final_decision=False,
-                 rule_safety_fallback=False):
+                 rule_safety_fallback=False, memory_write=False, memory_retrieve=False,
+                 llm_window_interpretation=False, llm_tool_max_calls=None,
+                 investigation_checkpoint=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -97,14 +157,25 @@ class ReActReview:
             raise ValueError('Unified event decision requires event control')
         if separate_final_decision and not unified_event_decision:
             raise ValueError('Separated final decision requires unified event decision')
+        if llm_window_interpretation and not separate_final_decision:
+            raise ValueError('LLM window interpretation requires the separate final decision phase')
+        if llm_tool_max_calls is not None and (type(llm_tool_max_calls) is not int or llm_tool_max_calls < 1):
+            raise ValueError('llm_tool_max_calls must be a positive integer')
+        if investigation_checkpoint and not llm_window_interpretation:
+            raise ValueError('Investigation checkpoints require LLM window interpretation')
+        self.investigation_checkpoint = investigation_checkpoint
+        self.evidence_focus = None
+        self.llm_window_interpretation = llm_window_interpretation
+        self.llm_tool_max_calls = llm_tool_max_calls
         self.model, self.max_rounds, self.history_windows = model, max_rounds, history_windows
         self.boundary_tools = boundary_tools
         self.live_scoring = boundary_tools and live_scoring
         self.event_control = event_control
         self.unified_event_decision = unified_event_decision
-        self.scheduled_evidence = scheduled_evidence
         self.separate_final_decision = separate_final_decision
         self.rule_safety_fallback = rule_safety_fallback
+        self.memory_write = memory_write and history_windows > 0
+        self.memory_retrieve = memory_retrieve
         self.pending_close = None
         self.last_action = None
         self.history = []
@@ -113,16 +184,25 @@ class ReActReview:
                        'llm_completion_tokens': 0}
 
     def review(self, call, primary, secondary, tracker, config, session, emit, *,
-               call_window=None, seeded_decision=None):
+               call_window=None, ledger=None, window_s=None, primary_lead=None):
         self.pending_close = None
         self.last_action = None
-        start, end = primary['window_s']
+        self.evidence_focus = None
+        if primary is not None:
+            window_s, primary_lead = primary['window_s'], primary['lead']
+        if window_s is None or primary_lead is None:
+            raise ValueError('Review requires current window coordinates and a primary lead')
+        start, end = window_s
         c = session.evidence_context
         identity = {'run_id': c.run_id, 'task_id': c.task_id, 'record_id': c.record_id}
         if self.identity is not None and self.identity != identity:
             raise ValueError('Create a fresh reviewer for each run/task/record')
+        if (self.memory_retrieve or self.llm_window_interpretation) and ledger is not None and ledger.context != c:
+            raise ValueError('Memory retrieval requires this review record and task ledger')
+        if self.memory_retrieve and ledger is None:
+            raise ValueError('Memory retrieval requires this review record and task ledger')
         self.identity = identity
-        state = {'identity': identity, 'window_s': [start, end], 'primary_lead': primary['lead'],
+        state = {'identity': identity, 'window_s': [start, end], 'primary_lead': primary_lead,
                  'available_leads': list(session.context.waveform.channels),
                  'secondary_lead': secondary, 'state': tracker.state,
                  'active_event': deepcopy(tracker.active), 'recent_windows': deepcopy(self.history),
@@ -131,16 +211,24 @@ class ReActReview:
                  'unknown_start_s': tracker.unknown_start,
                  'primary_evidence': deepcopy(primary),
                  'remaining_tool_calls': session.max_calls - len(session.calls)}
-        if seeded_decision is not None:
-            state['scheduled_window_interpretation'] = {
-                'decision': seeded_decision[0], 'checked': seeded_decision[1],
-                'reason': seeded_decision[2]}
         if self.unified_event_decision:
             state['already_acquired_evidence'] = [
                 {'evidence_id': r['evidence_id'], 'tool': r['tool'], 'lead': r['lead'],
                  'window_s': deepcopy(r['window_s']), 'status': r['status'],
                  'result': deepcopy(r['result'])}
                 for r in session.calls if r['available_at_s'] <= end]
+        visible_history = {key for window in self.history for key in window.get('evidence_ids', [])}
+        retained_citations = visible_history if self.memory_write else set()
+        retrieved_ids = set()
+        writable_evidence = set()
+        written = set()
+        if self.memory_write:
+            shown = {row['evidence_id'] for row in state.get('already_acquired_evidence', [])}
+            if primary is not None:
+                shown.add(primary['evidence_id'])
+            writable_evidence = {r['evidence_id'] for r in session.calls
+                                 if r['evidence_id'] in shown and r['status'] == 'ok'
+                                 and r['available_at_s'] <= end}
         # Active events may contain hours of intervals; expose bounded recent spans only.
         if state['active_event']:
             for key, value in state['active_event'].items():
@@ -168,6 +256,13 @@ class ReActReview:
                     'Choose a final action only after considering acquired evidence and the active event.\n'
                     'The rule interpreter determines each window interpretation; the event-end action\n'
                     'controls closure of a confirmed event. Cite actual evidence IDs.\n')
+        if primary is None:
+            prompt += (
+                '\nThis review starts with no current-window measurements. Decide which tools, leads '
+                'and elapsed intervals to measure, or finish if no measurement is needed. '
+                'To supply current AF/AFL evidence to the window interpreter, request score_ecgfounder '
+                'for the current window on a lead you choose. Use assess_quality when useful. '
+                'An unscored window is unknown, and historical tool results apply to their own intervals.\n')
         messages = [{'role': 'system', 'content': prompt},
                     {'role': 'user', 'content': json.dumps(state, allow_nan=False)}]
         tools = [s for s in session.registry.function_schemas(include_experimental=self.boundary_tools)
@@ -179,10 +274,14 @@ class ReActReview:
                 'CLOSE requests termination only with local boundary evidence. For non-CLOSE, '
                 'end_s must be null; event_id may name the current event. For CLOSE, cite the active event ID, actual '
                 'evidence IDs, and an estimated boundary distinct from decision time.\n')
+            final_schema = EventDecision
+            if self.llm_window_interpretation:
+                prompt = WINDOW_PROMPT.read_text(encoding='utf-8')
+                final_schema = WindowEventDecision
             messages[0]['content'] = prompt
             tools.append({'type': 'function', 'function': {'name': 'submit_event_decision',
-                'description': 'Submit one explicit event-end decision and finish this review.',
-                'parameters': EventDecision.model_json_schema()}})
+                'description': ('Submit the current-window rhythm interpretation and event action (KEEP_OPEN, DEFER, or CLOSE).' if self.llm_window_interpretation else 'Submit one explicit event-end decision and finish this review.'),
+                'parameters': final_schema.model_json_schema()}})
             if self.separate_final_decision:
                 prompt += ('\nMeasurement phase: request a measurement or call finish_measurements. '
                            'A separate final phase will always ask for exactly one event decision. '
@@ -202,6 +301,43 @@ class ReActReview:
             tools.append({'type': 'function', 'function': {'name': 'end_confirmed_event',
                           'description': 'Request closure of the named confirmed active event using local boundary evidence.',
                           'parameters': CloseEvent.model_json_schema()}})
+        if self.memory_write:
+            messages[0]['content'] += (
+                '\nWhile reviewing, you may call write_memory with the exact evidence_id of a successful '
+                'measurement shown in this review if later windows need its details. Select useful results '
+                'such as RR or beat morphology. Scores and quality already carry forward automatically. '
+                'The runtime keeps the selected tool result in recent_windows. '
+                'Writing uses one interaction turn, no measurement budget, and does not finish review.\n')
+            tools.append({'type': 'function', 'function': {'name': 'write_memory',
+                          'description': 'Keep a measured result in recent window memory for later reviews.',
+                          'parameters': WriteMemory.model_json_schema()}})
+        if self.memory_retrieve:
+            messages[0]['content'] += (
+                '\nUse retrieve_memory when you need a previous measurement or an earlier event to '
+                'resolve this review. Query absolute seconds and use the lead/tool filters for '
+                'evidence or event_id for events. Historical scores describe their own intervals. '
+                'Retrieval uses one interaction turn and no measurement budget. Cite returned '
+                'evidence IDs where relevant and obtain current local boundary evidence for a close.\n')
+            tools.append({'type': 'function', 'function': {'name': 'retrieve_memory',
+                          'description': 'Find previously acquired measurements or tracked events '
+                                         'in this recording and task, newest first.',
+                          'parameters': RetrieveMemory.model_json_schema()}})
+        if self.investigation_checkpoint:
+            messages[0]['content'] += (
+                '\nINVESTIGATION CHECKPOINT. After the first successful current rhythm '
+                'measurement, you must call record_evidence_focus once before further tools. '
+                'Describe your own observable concern or no_specific_issue; never invent '
+                'a conflict merely to justify extra measurements. Cite actual evidence IDs. '
+                'Propose ONE next tool and interval only when it can resolve a named question. '
+                'You retain the choice to finish, retrieve memory, or gather more evidence. '
+                'The checkpoint records your hypothesis; it does not assign a rhythm label '
+                'and it never triggers EventTracker transitions. Update your hypothesis if '
+                'subsequent observations contradict it.\n')
+            tools.append({'type': 'function', 'function': {
+                'name': 'record_evidence_focus',
+                'description': 'Record a grounded suspected change, the unresolved question, '
+                               'and one high-information next test (or none). Not a diagnosis.',
+                'parameters': EvidenceFocus.model_json_schema()}})
         stop = 'round_limit'
         failed = False
         measurement_done = False
@@ -211,34 +347,53 @@ class ReActReview:
         total_rounds = self.max_rounds + (1 if self.separate_final_decision else 0)
         for step in range(total_rounds):
             final_phase = self.separate_final_decision and (measurement_done or step >= self.max_rounds - 1)
-            if self.separate_final_decision and not final_phase and len(session.calls) >= session.max_calls:
-                measurement_done = True
+            budget_exhausted = len(session.calls) >= session.max_calls
+            if (self.separate_final_decision and budget_exhausted
+                    and not self.memory_retrieve and not (writable_evidence - written)):
                 final_phase = True
             if final_phase and not final_context_added:
                 aliases = {f'E{i}': row['evidence_id'] for i, row in enumerate(session.calls, 1)}
                 messages.append({'role': 'user', 'content': json.dumps({
                     'phase': 'final_decision',
                     'active_event_id': (tracker.active or {}).get('event_id'),
+                    **({'evidence_focus': deepcopy(self.evidence_focus)} if self.investigation_checkpoint else {}),
                     'evidence_aliases': [{
                         'id': alias, 'tool': row['tool'], 'lead': row['lead'],
                         'window_s': row['window_s'], 'status': row['status'],
-                        'result': row['result']}
+                        'result': row['result'], **({'warnings': row['warnings'], 'error': row['error'],
+                        'available_at_s': row['available_at_s']} if self.llm_window_interpretation else {})}
                         for alias, row in zip(aliases, session.calls)],
                     'instruction': 'Submit one decision. You may cite these short IDs; '
                                    'the runtime resolves them to immutable evidence IDs.'}, allow_nan=False)})
                 final_context_added = True
             began = perf_counter()
             audit = dict(identity, cursor_s=end, step=step)
+            if self.llm_window_interpretation:
+                audit['phase'] = 'retry' if decision_retries else 'final' if final_phase else 'acquisition'
             self.counts['llm_calls'] += 1
             try:
                 try:
                     if self.separate_final_decision:
                         available_tools = [t for t in tools if
                             (t['function']['name'] == 'submit_event_decision') == final_phase]
+                        if budget_exhausted and not final_phase:
+                            available_tools = [t for t in available_tools if
+                                t['function']['name'] not in allowed]
+                        if self.investigation_checkpoint and not final_phase:
+                            rhythm_observed = any(r['tool'] != 'assess_quality' and
+                                                  overlaps_current(r, start, end) for r in session.calls)
+                            if not rhythm_observed:
+                                available_tools = [t for t in available_tools if
+                                                   t['function']['name'] != 'record_evidence_focus']
+                            elif self.evidence_focus is None:
+                                available_tools = [t for t in available_tools if
+                                                   t['function']['name'] == 'record_evidence_focus']
                     else:
                         available_tools = ([t for t in tools if t['function']['name'] == 'submit_event_decision']
                                            if self.unified_event_decision and step == self.max_rounds - 1
                                            else tools)
+                        if budget_exhausted and self.memory_retrieve:
+                            available_tools = [t for t in available_tools if t['function']['name'] not in allowed]
                     reply = self.model.complete(deepcopy(messages), deepcopy(available_tools))
                 finally:
                     self.counts['llm_ms'] += (perf_counter() - began) * 1000
@@ -251,13 +406,77 @@ class ReActReview:
                 if msg.get('role') != 'assistant' or len(calls) != 1:
                     raise ValueError('Exactly one assistant tool call required')
                 fn = calls[0]['function']; name = fn['name']
-                if self.separate_final_decision and name not in {
-                        t['function']['name'] for t in available_tools}:
-                    raise ValueError('Tool is not available in this phase')
                 args = json.loads(fn['arguments']) if isinstance(fn['arguments'], str) else fn['arguments']
                 if not isinstance(args, dict):
                     raise ValueError('Tool arguments must be an object')
-                audit = dict(identity, cursor_s=end, step=step, action=name, arguments=deepcopy(args))
+                audit.update(action=name, arguments=deepcopy(args))
+                if (self.separate_final_decision or name in ('write_memory', 'retrieve_memory')) and name not in {
+                        t['function']['name'] for t in available_tools}:
+                    raise ValueError('Tool is not available in this phase')
+                if name == 'record_evidence_focus' and self.investigation_checkpoint:
+                    try:
+                        focus = EvidenceFocus.model_validate(args)
+                        known = {r['evidence_id']: r for r in session.calls}
+                        if (len(focus.evidence_ids) != len(set(focus.evidence_ids)) or
+                                not all(k in known and overlaps_current(known[k], start, end)
+                                        for k in focus.evidence_ids)):
+                            raise ValueError('Cite distinct successful current-window evidence IDs')
+                        if focus.next_tool not in ({t['function']['name'] for t in tools} & allowed) | {'retrieve_memory', 'none'}:
+                            raise ValueError('Next tool must be permitted, retrieve_memory or none')
+                        if focus.next_tool == 'retrieve_memory' and not self.memory_retrieve:
+                            raise ValueError('Memory retrieval is not enabled')
+                        if focus.target_lead is not None and focus.target_lead not in state['available_leads']:
+                            raise ValueError('Next test lead is unavailable')
+                        if ((focus.target_start_s is None) != (focus.target_end_s is None)):
+                            raise ValueError('Specify both target times or neither')
+                        if focus.next_tool in allowed and (focus.target_lead is None or focus.target_start_s is None):
+                            raise ValueError('Specify the lead and interval for the proposed measurement')
+                        if focus.next_tool == 'score_ecgfounder' and (
+                                focus.target_end_s - focus.target_start_s != 10 or
+                                (not self.live_scoring and (focus.target_start_s, focus.target_end_s) != (start, end))):
+                            raise ValueError('Planned ECGFounder interval is outside the current scoring scope')
+                        if focus.next_tool in allowed and focus.target_start_s is not None and not (
+                                session.context.origin_s <= focus.target_start_s <
+                                focus.target_end_s <= end):
+                            raise ValueError('Next test lies outside arrived retained signal')
+                    except ValueError as exc:
+                        outcome = {'status': 'focus_rejected', 'error_message': str(exc)[:500]}
+                    else:
+                        self.evidence_focus = focus.model_dump()
+                        outcome = {'status': 'focus_recorded', 'focus': deepcopy(self.evidence_focus)}
+                    emit('llm_steps', dict(audit, **outcome))
+                    _tool_exchange(messages, step, name, args, outcome)
+                    continue
+                if name == 'write_memory':
+                    try:
+                        key = WriteMemory.model_validate(args).evidence_id
+                        if key not in writable_evidence:
+                            raise ValueError('Use an ID of a successful measurement shown in this review')
+                    except ValueError as exc:
+                        outcome = {'status': 'memory_write_rejected', 'error_message': str(exc)[:500]}
+                    else:
+                        outcome = {'status': 'memory_already_written' if key in written else 'memory_written',
+                                   'evidence_id': key}
+                        written.add(key)
+                    emit('llm_steps', dict(audit, **outcome))
+                    _tool_exchange(messages, step, name, args, outcome)
+                    continue
+                if name == 'retrieve_memory':
+                    try:
+                        query = RetrieveMemory.model_validate(args)
+                        matches = _retrieve_memory(query, ledger, tracker, start, end)
+                    except ValueError as exc:
+                        outcome = {'status': 'memory_retrieval_rejected', 'error_message': str(exc)[:500]}
+                        emit('llm_steps', dict(audit, **outcome))
+                    else:
+                        evidence_ids = [row['evidence_id'] for row in matches if query.scope == 'evidence']
+                        event_ids = [row['event_id'] for row in matches if query.scope == 'events']
+                        retrieved_ids.update(evidence_ids)
+                        outcome = {'status': 'memory_retrieved', 'scope': query.scope, 'matches': matches}
+                        emit('llm_steps', dict(audit, status='memory_retrieved', count=len(matches),
+                                               evidence_ids=evidence_ids, event_ids=event_ids))
+                    _tool_exchange(messages, step, name, args, outcome)
+                    continue
                 if name == 'finish_measurements' and self.separate_final_decision:
                     if args:
                         raise ValueError('finish_measurements takes no arguments')
@@ -265,16 +484,17 @@ class ReActReview:
                     measurement_done = True
                     continue
                 if name == 'submit_event_decision' and self.unified_event_decision:
-                    submitted = EventDecision.model_validate(args)
+                    submitted = final_schema.model_validate(args)
+                    action = submitted.action if self.llm_window_interpretation else submitted.decision
                     if aliases:
                         submitted.evidence_ids = [aliases.get(key, key) for key in submitted.evidence_ids]
                     known = {r['evidence_id']: r for r in session.calls}
-                    visible_history = {evidence_id for window in self.history
-                                       for evidence_id in window['evidence_ids']}
                     if (len(set(submitted.evidence_ids)) != len(submitted.evidence_ids) or
-                            not set(submitted.evidence_ids) <= known.keys() | visible_history):
+                            not set(submitted.evidence_ids) <= known.keys() | visible_history | retrieved_ids):
                         raise ValueError('Event decision cites unavailable or duplicate evidence')
-                    if submitted.decision == 'CLOSE':
+                    if self.llm_window_interpretation:
+                        validate_grounding(submitted, known, ledger, start, end, tracker.active, CLOSURE_EVIDENCE_TOOLS)
+                    if action == 'CLOSE':
                         close = CloseEvent.model_validate({
                             'event_id': submitted.event_id, 'end_s': submitted.end_s,
                             'evidence_ids': submitted.evidence_ids, 'reason': submitted.reason})
@@ -293,11 +513,13 @@ class ReActReview:
                            (tracker.active is None or submitted.event_id != tracker.active['event_id']))):
                         raise ValueError('Non-close decision has end time or wrong event ID')
                     emit('llm_steps', dict(audit, status='decision_submitted',
-                                           decision=submitted.decision,
+                                           decision=action,
                                            evidence_ids=submitted.evidence_ids))
-                    self.last_action = {'decision': submitted.decision, 'reason': submitted.reason,
+                    self.last_action = {'decision': action, 'reason': submitted.reason,
                                         'evidence_ids': list(submitted.evidence_ids)}
-                    stop = 'model_decision_' + submitted.decision.lower()
+                    if self.llm_window_interpretation:
+                        self.last_action.update(submitted.model_dump(), decision_source='llm')
+                    stop = 'model_decision_' + action.lower()
                     break
                 if name == 'end_confirmed_event' and self.event_control:
                     close = CloseEvent.model_validate(args)
@@ -307,8 +529,9 @@ class ReActReview:
                             or close.event_id != active['event_id']
                             or not active['reported_intervals'][-1][0] < close.end_s <= end
                             or len(set(close.evidence_ids)) != len(close.evidence_ids)
-                            or not set(close.evidence_ids) <= known.keys()
-                            or not any(known[k]['tool'] in CLOSURE_EVIDENCE_TOOLS and known[k]['status'] == 'ok'
+                            or not set(close.evidence_ids) <= known.keys() | retained_citations | retrieved_ids
+                            or not any(k in known and known[k]['tool'] in CLOSURE_EVIDENCE_TOOLS
+                                       and known[k]['status'] == 'ok'
                                        and known[k]['window_s'][0] <= close.end_s <= known[k]['window_s'][1]
                                        for k in close.evidence_ids)):
                         raise ValueError('Event closure requires an active event and successful local boundary evidence')
@@ -320,7 +543,7 @@ class ReActReview:
                 if name == ('keep_event_open' if self.event_control else 'finish_review'):
                     finish = finish_schema.model_validate(args)
                     known = {r['evidence_id']: r for r in session.calls}
-                    if not set(finish.evidence_ids) <= known.keys():
+                    if not set(finish.evidence_ids) <= known.keys() | retained_citations | retrieved_ids:
                         raise ValueError('Finish cites unknown evidence')
                     recorded = dict(audit, status='stopped', reason=finish.reason)
                     if self.boundary_tools:
@@ -330,7 +553,8 @@ class ReActReview:
                         active = tracker.active
                         if (not active or active['confirmed_at_s'] is None
                                 or not max(session.context.origin_s, active['estimated_start_s']) < proposed <= end
-                                or not any(known[k]['tool'] in CLOSURE_EVIDENCE_TOOLS and known[k]['status'] == 'ok'
+                                or not any(k in known and known[k]['tool'] in CLOSURE_EVIDENCE_TOOLS
+                                           and known[k]['status'] == 'ok'
                                            and known[k]['window_s'][0] <= proposed < known[k]['window_s'][1]
                                            for k in finish.evidence_ids)):
                             raise ValueError('Proposed end needs an active event and successful local evidence at the boundary')
@@ -340,7 +564,7 @@ class ReActReview:
                     break
                 if name not in allowed:
                     raise ValueError('Tool is not enabled for this review')
-                if len(session.calls) >= session.max_calls:
+                if budget_exhausted:
                     stop = 'tool_budget'; break
                 # Validate before dispatch; even rejected requests receive a bounded audit entry.
                 parsed = session.registry._tools[name].arguments.model_validate(args)
@@ -350,12 +574,10 @@ class ReActReview:
                 if current_only and (parsed.start_s, parsed.end_s) != (start, end):
                     raise ValueError('Only the arrived current window is retained')
                 result = call_window(name, parsed.model_dump()) if self.boundary_tools else call(name, parsed.lead)
+                if self.memory_write and result['status'] == 'ok' and result['available_at_s'] <= end:
+                    writable_evidence.add(result['evidence_id'])
                 emit('llm_steps', dict(audit, status='observed', evidence_id=result['evidence_id']))
-                messages.append({'role': 'assistant', 'content': None, 'tool_calls': [
-                    {'id': f'call-{step}', 'type': 'function', 'function': {
-                        'name': name, 'arguments': json.dumps(args, allow_nan=False)}}]})
-                messages.append({'role': 'tool', 'tool_call_id': f'call-{step}',
-                                 'content': json.dumps(result, allow_nan=False)})
+                _tool_exchange(messages, step, name, args, result)
                 messages.append({'role': 'user', 'content': json.dumps({
                     'remaining_tool_calls': session.max_calls - len(session.calls)})})
             except Exception as exc:
@@ -392,7 +614,18 @@ class ReActReview:
                     if r['window_s'] == [start, end]}
         def existing(tool, lead):
             return deepcopy(acquired.get((tool, lead)))
-        if failed and not self.separate_final_decision:
+        primary = existing('score_ecgfounder', primary_lead)
+        if self.llm_window_interpretation:
+            if failed:
+                self.pending_close = None
+                self.last_action.update(action='ACTION_ERROR', interpretation='unavailable',
+                                        event_id=(tracker.active or {}).get('event_id'), end_s=None,
+                                        decision_source='llm_action_error')
+                decision = ('unavailable', False, 'ACTION_ERROR')
+            else:
+                checked = any(overlaps_current(r, start, end) for r in session.calls)
+                decision = (self.last_action['interpretation'], checked, self.last_action['reason'])
+        elif failed:
             decision = ('unavailable', False, stop)
         else:
             decision = decide_event(existing, primary, secondary, tracker, config)
@@ -405,13 +638,13 @@ class ReActReview:
             item = {key: result[key] for key in ('tool', 'lead', 'status')}
             if self.boundary_tools:
                 item.update(window_s=deepcopy(result['window_s']), evidence_id=result['evidence_id'])
-            if not self.boundary_tools or result['tool'] not in BOUNDARY_TOOLS:
+            if not self.boundary_tools or result['tool'] not in BOUNDARY_TOOLS or result['evidence_id'] in written:
                 item['result'] = deepcopy(result['result'])
             acquired_summary.append(item)
         self.history.append({'window_s': [start, end], 'decision': decision[0],
                              'llm_action': deepcopy(self.last_action),
-                             'af_score': primary['result'].get('af_score'),
-                             'afl_score': primary['result'].get('afl_score'),
+                             'af_score': primary['result'].get('af_score') if primary else None,
+                             'afl_score': primary['result'].get('afl_score') if primary else None,
                              'acquired': acquired_summary,
                              'evidence_ids': [r['evidence_id'] for r in session.calls]})
         self.history = self.history[-self.history_windows:] if self.history_windows else []
