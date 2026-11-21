@@ -7,7 +7,7 @@ import json
 import unittest
 from types import SimpleNamespace
 
-from cardioagent.ecg_agent.harness.react import ReActReview
+from cardioagent.ecg_agent.harness.react import ReActReview, factual_history
 from cardioagent.ecg_agent.llm.contracts import ModelReply
 from cardioagent.ecg_agent.schemas import CachedScoreArgs, WindowArgs
 
@@ -30,7 +30,7 @@ class Script:
         self.seen.append((name, names))
         if names == ['submit_event_decision']:
             self.final_payload = json.loads(messages[-1]['content'])
-        assert name in names, (name, names)
+        # Return even unoffered actions to exercise the runtime validator.
         return call(name, args)
 
 
@@ -67,6 +67,21 @@ FOCUS = dict(issue='possible_onset', observation='Current model evidence support
 
 
 class FocusTests(unittest.TestCase):
+    def test_factual_history_preserves_measurement_and_omits_prior_reason(self):
+        window = {'window_s': [0, 10], 'decision': 'unavailable',
+                  'llm_action': {'action': 'DEFER', 'reason': 'old explanation'},
+                  'acquired': [{'tool': 'get_rate_rhythm', 'lead': 'ECG2', 'status': 'ok',
+                                'evidence_id': 'r1', 'result': {'raw': {'cv': .385},
+                                    'cleaned': {'cv': .208}, 'r_peaks_s': [1, 2]}}],
+                  'evidence_ids': ['r1']}
+        summary, = factual_history([window])
+        self.assertEqual(summary['action'], 'DEFER')
+        self.assertEqual(summary['acquired'][0]['raw'], {'cv': .385})
+        self.assertEqual(summary['acquired'][0]['cleaned'], {'cv': .208})
+        self.assertNotIn('old explanation', json.dumps(summary))
+        self.assertNotIn('r_peaks_s', json.dumps(summary))
+        self.assertEqual(window['llm_action']['reason'], 'old explanation')
+
     def run_case(self, actions, enable=True):
         model = Script(actions)
         session = Session()
@@ -83,7 +98,7 @@ class FocusTests(unittest.TestCase):
                                    window_s=(1770., 1780.), primary_lead='ECG1')
         return decision, reviewer, model, logs
 
-    def test_checkpoint_gates_second_tool_then_resumes(self):
+    def test_checkpoint_optional_and_only_recorded_once(self):
         actions = [
             ('score_ecgfounder', dict(lead='ECG1', start_s=1770., end_s=1780.)),
             ('record_evidence_focus', FOCUS),
@@ -97,7 +112,8 @@ class FocusTests(unittest.TestCase):
         self.assertEqual(decision[0], 'support')
         self.assertNotIn('record_evidence_focus', model.seen[0][1])
         self.assertEqual(model.final_payload['evidence_focus'], FOCUS)
-        self.assertEqual(model.seen[1][1], ['record_evidence_focus'])
+        self.assertIn('detect_beats', model.seen[1][1])
+        self.assertNotIn('record_evidence_focus', model.seen[2][1])
         self.assertEqual(reviewer.evidence_focus['next_tool'], 'detect_beats')
         self.assertTrue(any(name == 'llm_steps' and row.get('status') == 'focus_recorded'
                             for name, row in logs))
@@ -115,10 +131,28 @@ class FocusTests(unittest.TestCase):
         ]
         decision, reviewer, model, logs = self.run_case(actions)
         self.assertEqual(decision[0], 'support')
-        self.assertEqual(model.seen[2][1], ['record_evidence_focus'])
+        self.assertIn('record_evidence_focus', model.seen[2][1])
         self.assertTrue(any(name == 'llm_steps' and row.get('status') == 'focus_rejected'
                             for name, row in logs))
         self.assertEqual(reviewer.evidence_focus['issue'], 'possible_onset')
+
+    def test_illegal_action_can_recover_without_losing_measurement_phase(self):
+        actions = [('record_evidence_focus', FOCUS),
+                   ('score_ecgfounder', dict(lead='ECG1', start_s=1770., end_s=1780.)),
+                   ('finish_measurements', {}),
+                   ('submit_event_decision', dict(action='KEEP_OPEN', interpretation='support',
+                    event_id=None, end_s=None, evidence_ids=['E1'], reason='Current score'))]
+        decision, _, _, logs = self.run_case(actions)
+        self.assertEqual(decision[0], 'support')
+        self.assertTrue(any(r.get('status') == 'acquisition_retry' for _, r in logs))
+
+    def test_repeated_invalid_actions_stop_acquisition_separately(self):
+        actions = [('record_evidence_focus', FOCUS)] * 2 + [
+            ('submit_event_decision', dict(action='DEFER', interpretation='unavailable',
+             event_id=None, end_s=None, evidence_ids=[], reason='No measurements'))]
+        decision, _, _, logs = self.run_case(actions)
+        self.assertEqual(decision[0], 'unavailable')
+        self.assertTrue(any(r.get('status') == 'ACQUISITION_FAILURE' for _, r in logs))
 
     def test_off_preserves_original_measurement_flow(self):
         actions = [

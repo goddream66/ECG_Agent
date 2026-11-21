@@ -191,7 +191,8 @@ class ReActTests(unittest.TestCase):
         class RetrievalModel:
             def complete(self, messages, tools):
                 state = json.loads(messages[1]['content'])
-                test.assertEqual(state['recent_windows'], [])
+                test.assertIn('recent_windows', state)
+                test.assertEqual(len(state['recent_windows']), min(6, int(state['window_s'][0] // 10)))
                 results = [json.loads(m['content']) for m in messages if m['role'] == 'tool']
                 if state['window_s'][0] == 0:
                     if not results:
@@ -211,7 +212,7 @@ class ReActTests(unittest.TestCase):
         with TemporaryDirectory() as d:
             job = EventCheckpointTests().make_job(Path(d))
             job.update(policy='event-react',
-                       llm={'provider': 'test', 'memory_retrieve': True, 'history_windows': 0})
+                       llm={'provider': 'test', 'memory_retrieve': True, 'history_windows': 6})
             raw = SimpleNamespace(fs=250, sig_name=('ECG1', 'ECG2'), sig_len=5000,
                                   p_signal=np.ones((5000, 2)), units=('mV', 'mV'))
             with patch('cardioagent.ecg_agent.llm.providers.build_chat_model', return_value=RetrievalModel()), \

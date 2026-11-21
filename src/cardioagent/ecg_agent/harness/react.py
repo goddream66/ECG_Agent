@@ -140,13 +140,35 @@ def _tool_exchange(messages, step, name, args, result):
                      'content': json.dumps(result, allow_nan=False)})
 
 
+def factual_history(windows):
+    """Expose measured facts and past decisions while keeping the full audit ledger intact."""
+    summaries = []
+    for window in windows:
+        measurements = []
+        for source in window['acquired']:
+            item = {k: v for k, v in source.items() if k != 'result'}
+            result = source.get('result') or {}
+            for key in ('af_score', 'afl_score', 'rate_bpm', 'rr_cv', 'raw', 'cleaned',
+                        'removed_fraction', 'detector_status'):
+                if key in result:
+                    item[key] = result[key]
+            if source['tool'] == 'assess_quality':
+                item['quality'] = result
+            measurements.append(item)
+        action = window.get('llm_action') or {}
+        summaries.append(dict(window_s=window['window_s'], decision=window['decision'],
+                              action=action.get('action', action.get('decision')),
+                              acquired=measurements, evidence_ids=window['evidence_ids']))
+    return summaries
+
+
 class ReActReview:
     def __init__(self, model, *, max_rounds=5, history_windows=6, boundary_tools=False,
                  live_scoring=False, event_control=False,
                  unified_event_decision=False, separate_final_decision=False,
                  rule_safety_fallback=False, memory_write=False, memory_retrieve=False,
                  llm_window_interpretation=False, llm_tool_max_calls=None,
-                 investigation_checkpoint=False):
+                 investigation_checkpoint=False, fact_history=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -164,6 +186,7 @@ class ReActReview:
         if investigation_checkpoint and not llm_window_interpretation:
             raise ValueError('Investigation checkpoints require LLM window interpretation')
         self.investigation_checkpoint = investigation_checkpoint
+        self.fact_history = fact_history
         self.evidence_focus = None
         self.llm_window_interpretation = llm_window_interpretation
         self.llm_tool_max_calls = llm_tool_max_calls
@@ -205,7 +228,7 @@ class ReActReview:
         state = {'identity': identity, 'window_s': [start, end], 'primary_lead': primary_lead,
                  'available_leads': list(session.context.waveform.channels),
                  'secondary_lead': secondary, 'state': tracker.state,
-                 'active_event': deepcopy(tracker.active), 'recent_windows': deepcopy(self.history),
+                 'active_event': deepcopy(tracker.active),
                  'consecutive_support': tracker.support_count,
                  'consecutive_negative': tracker.negative_count,
                  'unknown_start_s': tracker.unknown_start,
@@ -217,6 +240,7 @@ class ReActReview:
                  'window_s': deepcopy(r['window_s']), 'status': r['status'],
                  'result': deepcopy(r['result'])}
                 for r in session.calls if r['available_at_s'] <= end]
+        state['recent_windows'] = factual_history(self.history) if self.fact_history else deepcopy(self.history)
         visible_history = {key for window in self.history for key in window.get('evidence_ids', [])}
         retained_citations = visible_history if self.memory_write else set()
         retrieved_ids = set()
@@ -305,15 +329,15 @@ class ReActReview:
             messages[0]['content'] += (
                 '\nWhile reviewing, you may call write_memory with the exact evidence_id of a successful '
                 'measurement shown in this review if later windows need its details. Select useful results '
-                'such as RR or beat morphology. Scores and quality already carry forward automatically. '
-                'The runtime keeps the selected tool result in recent_windows. '
+                'such as RR or beat morphology. Scores and quality are recorded automatically. '
+                'The runtime retains the selected tool result. '
                 'Writing uses one interaction turn, no measurement budget, and does not finish review.\n')
             tools.append({'type': 'function', 'function': {'name': 'write_memory',
                           'description': 'Keep a measured result in recent window memory for later reviews.',
                           'parameters': WriteMemory.model_json_schema()}})
         if self.memory_retrieve:
             messages[0]['content'] += (
-                '\nUse retrieve_memory when you need a previous measurement or an earlier event to '
+                '\nRecent window summaries are supplied. Use retrieve_memory when you need a previous measurement or an earlier event to '
                 'resolve this review. Query absolute seconds and use the lead/tool filters for '
                 'evidence or event_id for events. Historical scores describe their own intervals. '
                 'Retrieval uses one interaction turn and no measurement budget. Cite returned '
@@ -325,14 +349,13 @@ class ReActReview:
         if self.investigation_checkpoint:
             messages[0]['content'] += (
                 '\nINVESTIGATION CHECKPOINT. After the first successful current rhythm '
-                'measurement, you must call record_evidence_focus once before further tools. '
+                'measurement, you may record one evidence focus for this window. '
                 'Describe your own observable concern or no_specific_issue; never invent '
                 'a conflict merely to justify extra measurements. Cite actual evidence IDs. '
                 'Propose ONE next tool and interval only when it can resolve a named question. '
                 'You retain the choice to finish, retrieve memory, or gather more evidence. '
                 'The checkpoint records your hypothesis; it does not assign a rhythm label '
-                'and it never triggers EventTracker transitions. Update your hypothesis if '
-                'subsequent observations contradict it.\n')
+                'and it never triggers EventTracker transitions.\n')
             tools.append({'type': 'function', 'function': {
                 'name': 'record_evidence_focus',
                 'description': 'Record a grounded suspected change, the unresolved question, '
@@ -341,6 +364,8 @@ class ReActReview:
         stop = 'round_limit'
         failed = False
         measurement_done = False
+        acquisition_errors = 0
+        acquisition_failed = False
         decision_retries = 0
         aliases = {}
         final_context_added = False
@@ -382,12 +407,9 @@ class ReActReview:
                         if self.investigation_checkpoint and not final_phase:
                             rhythm_observed = any(r['tool'] != 'assess_quality' and
                                                   overlaps_current(r, start, end) for r in session.calls)
-                            if not rhythm_observed:
+                            if not rhythm_observed or self.evidence_focus is not None:
                                 available_tools = [t for t in available_tools if
                                                    t['function']['name'] != 'record_evidence_focus']
-                            elif self.evidence_focus is None:
-                                available_tools = [t for t in available_tools if
-                                                   t['function']['name'] == 'record_evidence_focus']
                     else:
                         available_tools = ([t for t in tools if t['function']['name'] == 'submit_event_decision']
                                            if self.unified_event_decision and step == self.max_rounds - 1
@@ -446,6 +468,9 @@ class ReActReview:
                         outcome = {'status': 'focus_recorded', 'focus': deepcopy(self.evidence_focus)}
                     emit('llm_steps', dict(audit, **outcome))
                     _tool_exchange(messages, step, name, args, outcome)
+                    if outcome['status'] == 'focus_rejected':
+                        raise ValueError(outcome['error_message'])
+                    acquisition_errors = 0
                     continue
                 if name == 'write_memory':
                     try:
@@ -460,6 +485,8 @@ class ReActReview:
                         written.add(key)
                     emit('llm_steps', dict(audit, **outcome))
                     _tool_exchange(messages, step, name, args, outcome)
+                    if outcome['status'] != 'memory_write_rejected':
+                        acquisition_errors = 0
                     continue
                 if name == 'retrieve_memory':
                     try:
@@ -476,6 +503,8 @@ class ReActReview:
                         emit('llm_steps', dict(audit, status='memory_retrieved', count=len(matches),
                                                evidence_ids=evidence_ids, event_ids=event_ids))
                     _tool_exchange(messages, step, name, args, outcome)
+                    if outcome['status'] == 'memory_retrieved':
+                        acquisition_errors = 0
                     continue
                 if name == 'finish_measurements' and self.separate_final_decision:
                     if args:
@@ -576,6 +605,7 @@ class ReActReview:
                 result = call_window(name, parsed.model_dump()) if self.boundary_tools else call(name, parsed.lead)
                 if self.memory_write and result['status'] == 'ok' and result['available_at_s'] <= end:
                     writable_evidence.add(result['evidence_id'])
+                acquisition_errors = 0
                 emit('llm_steps', dict(audit, status='observed', evidence_id=result['evidence_id']))
                 _tool_exchange(messages, step, name, args, result)
                 messages.append({'role': 'user', 'content': json.dumps({
@@ -585,9 +615,17 @@ class ReActReview:
                                        error_message=str(exc)[:500]))
                 if self.separate_final_decision:
                     if not final_phase:
-                        measurement_done = True
-                        messages.append({'role': 'user', 'content':
-                            'Measurement failed. Proceed to final decision using only available evidence.'})
+                        acquisition_errors += 1
+                        retry = (isinstance(exc, (ValueError, KeyError, TypeError))
+                                 and acquisition_errors < 2 and step + 1 < self.max_rounds - 1)
+                        if not retry:
+                            acquisition_failed = measurement_done = True
+                        status = 'acquisition_retry' if retry else 'ACQUISITION_FAILURE'
+                        emit('llm_steps', dict(audit, status=status, consecutive_errors=acquisition_errors,
+                                               error_message=str(exc)[:500]))
+                        instruction = ('Choose one listed tool for this phase.' if retry else
+                                       'Proceed to final decision using available evidence.')
+                        messages.append({'role': 'user', 'content': f'{status}: {str(exc)[:500]}. {instruction}'})
                         continue
                     decision_retries += 1
                     if decision_retries <= 1:
@@ -630,7 +668,7 @@ class ReActReview:
         else:
             decision = decide_event(existing, primary, secondary, tracker, config)
         emit('llm_steps', dict(identity, cursor_s=end, status='review_complete', stop_reason=stop,
-                              decision=decision[0], interpreter_reason=decision[2],
+                              decision=decision[0], interpreter_reason=decision[2], acquisition_failed=acquisition_failed,
                               llm_action=deepcopy(self.last_action),
                               remaining_tool_calls=session.max_calls-len(session.calls)))
         acquired_summary = []
@@ -638,7 +676,9 @@ class ReActReview:
             item = {key: result[key] for key in ('tool', 'lead', 'status')}
             if self.boundary_tools:
                 item.update(window_s=deepcopy(result['window_s']), evidence_id=result['evidence_id'])
-            if not self.boundary_tools or result['tool'] not in BOUNDARY_TOOLS or result['evidence_id'] in written:
+            if (not self.boundary_tools or result['tool'] not in BOUNDARY_TOOLS
+                    or result['evidence_id'] in written
+                    or (self.fact_history and result['tool'] in {'get_rate_rhythm', 'detect_beats', 'assess_quality'})):
                 item['result'] = deepcopy(result['result'])
             acquired_summary.append(item)
         self.history.append({'window_s': [start, end], 'decision': decision[0],
