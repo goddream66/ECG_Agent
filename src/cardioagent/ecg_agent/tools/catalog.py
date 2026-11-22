@@ -11,8 +11,8 @@ def build_registry(*, include_cached_model=False):
     for name,description,args,handler in (
         ('assess_quality','Measure ECG signal quality; heuristic scores, not probabilities.',WindowArgs,m.quality),
         ('detect_beats','Detect window-local R peaks and median-RR rate; no rhythm diagnosis.',BeatArgs,m.beats),
-        ('get_rate_rhythm','Return raw RR and optional cleaning mask/statistics; no AF label.',WindowArgs,m.rhythm),
-        ('get_feature_profile','Coarse RR variability bins to locate suspicious elapsed intervals.',ProfileArgs,m.profile),
+        ('get_rate_rhythm','Return raw RR and optional cleaning mask/statistics. Lower RR-CV means more regular intervals. Depends on R-peak detection; no AF label.',WindowArgs,m.rhythm),
+        ('get_feature_profile','Compare RR variability across elapsed sub-windows. Shares peak information with RR tools; not independent rhythm confirmation.',ProfileArgs,m.profile),
     ):
         version = '1.0.0' if name == 'assess_quality' else '1.0.1'
         registry.register(ToolSpec(name,description,args,handler,version=version))

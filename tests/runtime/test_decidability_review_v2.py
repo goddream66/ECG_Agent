@@ -92,8 +92,8 @@ class ReviewV2Tests(unittest.TestCase):
                 for row in paired), encoding='utf-8')
             report = analyze(output, results)
             self.assertEqual(report['n_cases'], 2)
-            self.assertEqual(report['counts']['score_sufficient'], 1)
-            self.assertEqual(report['counts']['waveform_adds_information'], 1)
+            self.assertEqual(report['counts']['reviewer_reported_score_sufficient'], 1)
+            self.assertEqual(report['counts']['reviewer_reported_waveform_adds_information'], 1)
             rows[0]['rationale'] = 'edited after sealing'
             write_csv(stage_a / 'review.csv', fields, rows)
             with self.assertRaisesRegex(ValueError, 'changed after'):

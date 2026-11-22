@@ -80,10 +80,12 @@ def time_metrics(predicted, reference, valid, unknown=()):
 
 
 
-def evaluate_record(task_id, predicted, reference, *, valid=None, unknown=(), updates=(), events=(), duration=None):
+def evaluate_record(task_id, predicted, reference, *, valid=None, unknown=(), updates=(), events=(), duration=None,
+                    burden_intervals=None):
     start, end = reference['start_s'], reference['end_s']
     expected = validate_intervals(reference['intervals'], start, end)
     actual = validate_intervals(predicted, start, end)
+    supported = actual if burden_intervals is None else validate_intervals(burden_intervals, start, end)
     if valid is None:
         valid = [[start, end]]
     pairs = greedy_pairs(actual, expected, reference.get('tau', .5))
@@ -123,7 +125,8 @@ def evaluate_record(task_id, predicted, reference, *, valid=None, unknown=(), up
                      if tuple(actual[i]) not in censored_pred and expected[j][1] < end]
     for i, j in pairs:
         for event in events:
-            if event.get('termination_reason') == 'confirmed_end' and actual[i] in event.get('reported_intervals', []):
+            if (event.get('termination_reason') == 'confirmed_end' or
+                    (burden_intervals is not None and event.get('termination_reason') == 'llm_close')) and actual[i] in event.get('reported_intervals', []):
                 endings.append(event['end_decided_at_s'] - expected[j][1])
                 break
     n_long = sum(b-a >= 60 for a, b in expected)
@@ -132,7 +135,7 @@ def evaluate_record(task_id, predicted, reference, *, valid=None, unknown=(), up
                              for a,b in expected if b-a >= 60)
     long30 = [(n, b-a) for n, (a,b) in zip(counts, expected) if b-a >= 1800]
     row = {'task_id': task_id, 'duration_s': end-start, **interval_metrics(actual, expected, reference.get('tau', .5)),
-           **time_metrics(actual, expected, valid, unknown), **dict(durations),
+           **time_metrics(supported, expected, valid, unknown), **dict(durations),
            'prediction_count': len(actual), 'reference_count': len(expected),
            'segments_per_reference': counts, 'long_fragment_excess': long_fragments, 'long_reference_count': n_long,
            'long_interruptions': long_interruptions, 'long_reference_s': sum(b-a for a,b in expected if b-a >= 60),
@@ -150,7 +153,7 @@ def evaluate_record(task_id, predicted, reference, *, valid=None, unknown=(), up
            'unknown_timeout_events': sum(e.get('termination_reason') == 'unknown_timeout' for e in events),
            'candidate_timeout_events': sum(e.get('termination_reason') == 'candidate_timeout' for e in events),
            'right_censored_events': sum(e.get('right_censored', False) for e in events),
-           'burden_absolute_error_pp': abs(union_seconds(actual)/(end-start)-reference['burden'])*100}
+           'burden_absolute_error_pp': abs(union_seconds(supported)/(end-start)-reference['burden'])*100}
     # Negative time crossed by a merged prediction, not merely the count of merged events.
     crossed = 0.
     for prediction, n in zip(actual, intersections):

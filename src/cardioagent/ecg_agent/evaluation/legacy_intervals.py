@@ -19,7 +19,8 @@ def score_files(references,predictions,output):
         expected=validate_intervals(ref['intervals'],start,end)
         actual=validate_intervals(pred[task_id]['intervals'],start,end)
         metrics=interval_metrics(actual,expected,float(ref['tau']))
-        burden=union_seconds(actual)/(end-start)
+        supported = validate_intervals(pred[task_id].get('burden_intervals', actual), start, end)
+        burden=union_seconds(supported)/(end-start)
         target=float(ref['burden'])
         if not 0<=target<=1:raise ValueError('Reference burden must lie in [0,1]')
         rows.append({'task_id':task_id,'reference_positive':bool(expected),

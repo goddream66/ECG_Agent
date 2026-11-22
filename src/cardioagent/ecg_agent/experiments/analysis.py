@@ -170,7 +170,8 @@ def evaluate_new(args, tasks, references, validity):
                 _, unknown, states = trace_data(jsonlines(path/'window_trace.jsonl'))
                 updates = list(jsonlines(path/'event_updates.jsonl'))
                 evaluated = evaluate_record(task_id,result['intervals'],references[task_id],
-                                              valid=validity[task_id]['valid_intervals'],unknown=unknown,
+                                              valid=validity[task_id]['valid_intervals'],unknown=result.get('unknown_intervals', unknown),
+                                              burden_intervals=result.get('burden_intervals'),
                                               updates=updates,events=result['events'])
                 evaluated.update(result.get('counts',{}))
                 evaluated.update(result['execution'])

@@ -1,0 +1,54 @@
+{
+  "version": "autonomous-event-prompts-v1.2",
+  "baseline": "9bd292a",
+  "assembly": [
+    "core",
+    "one_of(no_open,open)",
+    "resume_if_pending",
+    "one_of(acquire,final)",
+    "one_of(autonomous_time,fixed_time,stream_end)",
+    "retry_if_final_rejected"
+  ],
+  "fragments": {
+    "core": {
+      "en": "Your job is to track atrial fibrillation (AF or AFIB) and atrial flutter (AFL) on a streaming ECG. Either rhythm counts. If AF changes directly to AFL or vice versa, keep tracking the same episode.\n\nAt each review, answer three questions in order.\n1. What does this segment show? Use SUPPORTS_TARGET when a measurement supports AF or AFL, AGAINST_TARGET when a measurement points away from both, and UNCERTAIN when you cannot tell. Missing data tells you nothing about the rhythm.\n2. Does the event ledger need an update? Choose an action allowed in its current state. To report that a rhythm is continuing, cite what still supports it.\n3. When should you look again? If you need to wait, name the question that remains open.\n\nUse only measurements available by cursor_s. All times are seconds from the start of the recording. Check the lead and interval before citing a result. Leave unobserved time unknown.",
+      "zh": "你的任务是追踪心电图中的房颤（AF 或 AFIB）和房扑（AFL）。出现其中任何一种，都属于目标心律。房颤直接转成房扑，或房扑直接转成房颤，继续追踪同一次事件。\n\n每次复核，按顺序回答三个问题。\n1. 这一段心电图说明什么？有测量支持房颤或房扑，选 SUPPORTS_TARGET；有测量提示两者都不符合，选 AGAINST_TARGET；看不清或证据不够，选 UNCERTAIN。没有数据就不能判断心律。\n2. 事件账本现在要更新吗？先看账本当前的状态，再从允许的动作里选。若认为事件仍在持续，要说出这一段还有什么证据支持它。\n3. 什么时候再看？如果决定等一等，说明还有哪个问题没弄清楚。\n\n只能使用截至当前游标（cursor_s）已经取得的测量。所有时间都从记录开头算，以秒为单位。引用结果前，核对导联和测量区间。没观察到的时段保留为未知。"
+    },
+    "no_open": {
+      "en": "There is no open event. Ask whether the current interval contains evidence to start tracking an episode. OPEN formally registers it, even on the first review. For a measured onset give a localized point or an evidence-bounded range. If already present at first observation, report the first supported interval and mark onset unobserved. RECORD_ONLY logs an observation without an outstanding question. DEFER_DECISION leaves a specific onset or rhythm question pending. After a previous closure, assess this interval afresh.",
+      "zh": "当前没有开放事件。判断本区间有无依据开始登记一次事件。OPEN 正式登记事件，首窗即可执行。实测到起点时给出有依据的定位点或范围。若首次观察时目标已存在，报告最早有支持的区间，标记起点未观察到。RECORD_ONLY 只记录观察，没有要追办的问题。DEFER_DECISION 挂起一个具体的起点或节律疑问。此前事件关闭后，要重新评估当前区间。"
+    },
+    "open": {
+      "en": "One event is open. RECORD_ONLY records current evidence and leaves it open. DEFER_DECISION leaves a specific unresolved question for later. Use CLOSE when evidence supports an end and locates or brackets the change. Identify what changed, on which lead and over what interval. A last detected beat, window edge or score drop alone does not locate an end. Keeping the event open does not label gaps positive.",
+      "zh": "当前有一个开放事件。RECORD_ONLY 记下本次观察并保持事件开放。DEFER_DECISION 留下一个需要以后处理的具体疑问。当前证据支持事件结束且能定位或夹定转变范围时，可选 CLOSE。说明是什么变化、出现在哪个导联和时段。仅有末次检出心搏、窗边缘或分数下降无法定位终点。保持事件身份不等于把间隔记成阳性。"
+    },
+    "acquire": {
+      "en": "Call one offered function per turn. Pick the check that could change your decision.\n- For AF/AFL scores, call score_ecgfounder on one available lead over ten retained seconds. A high AFL score can support the target even with a low AF score, and vice versa. Scores are uncalibrated; no cutoff dictates an action.\n- If a result looks unreliable, consider assess_quality or the other lead. A quality warning is a reason to check. For RR timing, use get_rate_rhythm: lower RR-CV means more regular intervals. Check beat counts and detector quality. Regular RR can occur in AFL.\n- For a possible change, compare measurements on either side using arrived signal. get_beat_timeline_proxy gives beat times and morphology clues. Measurements sharing peaks or samples count as related evidence. A proxy cannot diagnose the rhythm on its own.\n\nUse retrieve_memory for a previous measurement or event. Past opinions can be wrong; interpret past measurements at their own times. Use write_memory with the exact evidence_id of a useful successful measurement if its detail will matter later. Both memory tools use a turn without spending a measurement call. Use finish_measurements when ready or when another check would not help. In cached mode score_ecgfounder is available only for the displayed current window. Other ECG tools use their own interval constraints. Use only the offered tools.",
+      "zh": "每轮调用一个可用工具。先想清楚哪项检查可能改变你的判断。\n- 想看房颤和房扑分数，就用 score_ecgfounder 测一个可用导联已保留的完整十秒。房扑分数高、房颤分数低，仍可支持目标；反过来也一样。分数未经校准，没有必须触发某个动作的阈值。\n- 怀疑结果不可靠，可用 assess_quality 查质量，或补查另一导联。质量告警提示复核。想看心搏间隔，用 get_rate_rhythm。RR-CV 越低，间隔越规则；先核对检出的心搏数和检峰质量。房扑也可能有规则的 RR。\n- 怀疑节律发生变化，比较变化前后已经到达的信号。get_beat_timeline_proxy 提供心搏时刻和形态线索。共用心搏或波形采样点的结果相互关联；代理特征不能单独确诊心律。\n\n要查早先的测量或事件，用 retrieve_memory。过去的判断可能有误，历史测量只解释它自己的时段。有一项成功测量值得以后再看时，可用 write_memory 标记，填写工具实际返回的 evidence_id。两种记忆操作各占一轮交互，不占测量次数。证据够了，或再查也解决不了问题，就用 finish_measurements 结束取证。 缓存模式下 ECGFounder 只能测当前原窗，其余工具按各自区间约束工作。只调用当前提供的工具。"
+    },
+    "final": {
+      "en": "Call submit_event_decision once with the supplied schema. Report assessment for assessment_window_s, event_action, evidence_ids, a brief reason and next_review_s. For UNCERTAIN give the cause. If you claim conflict, cite two usable measurements from comparable intervals and say how they disagree about AF/AFL. Uncertainty about subtype or exact onset alone does not make the rhythm uncertain. For a point boundary, cite the observed change inside a successful measurement [start, end). If you can only bound it, report the range. For DEFER_DECISION state the question and what new observation would help. A wait changes no event boundary.\n\nUse the final list's E-numbers only for this review's measurements. For earlier evidence use an admissible ID shown in this review. Event identity is bound by the runtime. In one or two sentences tie the action to what you measured. If nothing usable arrived, report that fact; an empty citation list is valid when nothing was measured. For a bracket, cite a local measurement covering the range or measured intervals anchoring its two sides. The ledger retains the whole range. Report your actual estimate of the change; the evaluator handles the midpoint. Keep failed measurements and unsupported time distinguishable.",
+      "zh": "按给出的 schema 调用一次 submit_event_decision。提交 assessment_window_s 的证据方向、event_action、evidence_ids、简短理由和 next_review_s。选 UNCERTAIN 时写明原因。若说证据冲突，引用可比较时段内的两项可用测量，说明它们对有无房颤或房扑给出了怎样相反的提示。分不清亚型或起点，不等于看不清当前心律。若给出精确边界，须指出一次成功测量的 [start, end) 内实际观察到的变化；只能夹定时就给范围。DEFER_DECISION 需说明待办问题，以及什么新增观测可能解决它。等待不改变事件边界。\n\n最终清单的 E 编号仅能引用本次复核的测量；历史证据须用本轮展示且允许引用的 ID。事件身份由运行时绑定。用一两句说明为何这些实际测量支持所选动作。若没有可用测量，应如实说明；一项也没测时可给空引用列表。 转变范围需要覆盖它的局部测量，或能分别约束两端的前后测量。账本保存完整范围，中点由评价器计算。区分测量失败和缺乏支持的时间。"
+    },
+    "resume": {
+      "en": "You are resuming the supplied pending question. Read the last executed ledger change, original question and newly available interval. Retrieve or measure what can discriminate the alternatives. Say whether the question is resolved, withdrawn or still pending. If waiting again, link to the same question and say what is still missing. Set pending_resolution to resolved, withdrawn, or still_pending. Use still_pending when deferring the same question again.",
+      "zh": "你正在处理上次挂起的问题。先读账本最后一次已执行变更、最初疑问和新到达区间，再检索或测量有助于区分几种解释的证据。说明问题已解决、已撤回或仍待处理。若再次延迟，沿用原待办并指出还缺什么。 用 pending_resolution 填写 resolved、withdrawn 或 still_pending。再次延迟同一个问题时填写 still_pending。"
+    },
+    "autonomous_time": {
+      "en": "Choose the next review in absolute seconds after cursor_s, within the scheduling bounds shown. Choose a time that could add useful evidence while accounting for a short event you might miss and data that may leave the buffer. Until the next wake, signal is buffered without measurements. A request between arrivals wakes at the first batch covering it.",
+      "zh": "自主选择晚于 cursor_s、且在本次允许范围内的绝对记录秒数作为下次复核时间。权衡届时能否获得新信息、是否可能错过短事件，以及所需信号是否会移出缓冲区。等待期间只缓冲信号，不做测量。请求时刻位于两次交付之间时，在首个覆盖该时刻的批次唤醒。"
+    },
+    "fixed_time": {
+      "en": "The control arm wakes at the next scheduled batch. Use the supplied scheduled_review_s as next_review_s. You may defer a specific question or act now using the same evidence rules.",
+      "zh": "固定时间对照组在下一个预定批次唤醒。将给出的 scheduled_review_s 填入 next_review_s。你仍可挂起具体问题或现在作决定，证据要求相同。"
+    },
+    "stream_end": {
+      "en": "The runtime reports the stream has ended. Set next_review_s to null. Report any unresolved question as unresolved at stream end. An open event without measured termination is right-censored; the stop of recording supplies no rhythm transition.",
+      "zh": "运行时已报告数据流结束。next_review_s 填 null，尚未解决的问题标为流末未决。开放事件缺乏实际终止证据时记为右截断，录制停止本身不提供节律转换证据。"
+    },
+    "retry": {
+      "en": "The last submission was rejected and no event change or appointment was executed. Read the field error, current ledger state, allowed actions and citation list. Correct only what needs correction and call submit_event_decision once more. A format correction supplies no new ECG evidence.",
+      "zh": "上一份提交被拒绝，未执行事件变更或预约。读取报错字段、账本当前状态、合法动作和可用引用，仅修正必要内容，再调用一次 submit_event_decision。修正格式不会产生新的 ECG 证据。"
+    }
+  }
+}

@@ -48,14 +48,19 @@ def run_job(job):
                 raise ValueError(f'Corrupt checkpoint artifact: {target / name}')
         return json.loads(result_file.read_text(encoding='utf-8')), True
     target.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix=f'.{target.name}-', dir=target.parent) as tmp:
+    checkpoint = None
+    if (job.get('llm') or {}).get('event_review_mode'):
+        from .episode_checkpoint import EpisodeCheckpoint
+        checkpoint = EpisodeCheckpoint(target, job)
+    with (checkpoint or TemporaryDirectory(prefix=f'.{target.name}-', dir=target.parent)) as tmp:
         staging = Path(tmp) / 'result'
-        logs = JsonLogs(staging)
+        logs = JsonLogs(staging, append=bool(checkpoint))
         context = EvidenceContext(job['run_id'], job['task']['task_id'], job['record']['record_id'],
                                   job['manifest_id'])
         config = EventConfig(**job['config'])
-        neural_ms = 0.
-        actual_calls = 0
+        prior_execution = checkpoint.saved.get('execution', {}) if checkpoint else {}
+        neural_ms = prior_execution.get('neural_ms', 0.)
+        actual_calls = prior_execution.get('actual_calls', 0)
         def live(lead, values, location):
             nonlocal neural_ms, actual_calls
             began = perf_counter()
@@ -64,6 +69,10 @@ def run_job(job):
                 return _MODEL(values)
             finally:
                 neural_ms += (perf_counter() - began) * 1000
+                if checkpoint:
+                    checkpoint.execution.update(neural_ms=neural_ms, actual_calls=actual_calls)
+        if checkpoint:
+            checkpoint.execution.update(prior_execution)
         began = perf_counter()
         reviewer = None
         llm_load_ms = 0.
@@ -72,15 +81,26 @@ def run_job(job):
                 from cardioagent.ecg_agent.llm.providers import build_chat_model
                 from cardioagent.ecg_agent.harness.react import ReActReview
                 load_began = perf_counter()
-                reviewer = ReActReview(build_chat_model(job['llm']),
+                model = build_chat_model(job['llm'])
+                if job['llm'].get('event_review_mode'):
+                    from cardioagent.ecg_agent.llm.recording import RecordingChatModel
+                    model = RecordingChatModel(model, staging / 'qwen_calls.jsonl.gz')
+                reviewer = ReActReview(model,
                     max_rounds=job['llm'].get('max_rounds', 5),
+                    llm_tool_max_calls=job['llm'].get('llm_tool_max_calls'),
+                    llm_window_interpretation=job['llm'].get('llm_window_interpretation', False),
+                    investigation_checkpoint=job['llm'].get('investigation_checkpoint', False),
                     history_windows=job['llm'].get('history_windows', 6),
+                    fact_history=job['llm'].get('fact_history', False),
+                    event_review_mode=job['llm'].get('event_review_mode'),
+                    compact_final_evidence=job['llm'].get('compact_final_evidence', True),
+                    memory_write=job['llm'].get('memory_write', False),
+                    memory_retrieve=job['llm'].get('memory_retrieve', False),
                     boundary_tools=job['llm'].get('boundary_tools', False),
                     event_control=job['llm'].get('event_control', False),
                     unified_event_decision=job['llm'].get('unified_event_decision', False),
                     separate_final_decision=job['llm'].get('separate_final_decision', False),
                     rule_safety_fallback=job['llm'].get('rule_safety_fallback', False),
-                    scheduled_evidence=job['llm'].get('scheduled_evidence', False),
                     live_scoring=job['mode'] == 'live')
                 llm_load_ms = (perf_counter() - load_began) * 1000
             if job['mode'] == 'fixed':
@@ -96,7 +116,8 @@ def run_job(job):
                     score = live
                 result = replay_event_record(job['cache'], job['record'], job['task'], job['channel'],
                                              config, score, logs, context, policy=job['policy'],
-                                             raw_root=job['raw_root'], reviewer=reviewer)
+                                             raw_root=job['raw_root'], reviewer=reviewer,
+                                             **({'checkpoint': checkpoint} if checkpoint else {}))
         finally:
             logs.close()
         result['execution'] = {'mode': job['mode'], 'actual_model_calls': actual_calls,
@@ -107,7 +128,8 @@ def run_job(job):
                                'neural_ms': neural_ms, 'worker_model_load_ms': _LOAD_MS,
                                'model_load_accounting': 'once per worker, repeated here for attribution; do not sum',
                                'worker_pid': os.getpid(), 'threads': job['threads'],
-                               'record_wall_ms': (perf_counter() - began) * 1000}
+                               'record_wall_ms': (perf_counter() - began) * 1000 +
+                               (checkpoint.saved.get('elapsed_ms', 0.) if checkpoint else 0.)}
         save_json(staging / 'result.json', result)
         artifacts = {p.name: digest(p) for p in staging.iterdir() if p.is_file()}
         save_json(staging / 'job_manifest.json', {'job_hash': canonical_hash(job), 'job': job,
@@ -220,8 +242,12 @@ def run(args):
                   'selection': list(tasks), 'duration_s': args.duration_s,
                   'variants': [(name, cfg.to_dict(), policy) for name, cfg, policy in selected_variants]}
     if llm_config is not None:
-        from cardioagent.ecg_agent.harness.react import PROMPT
-        provenance['llm'] = dict(config=llm_config, prompt_sha256=digest(PROMPT))
+        from cardioagent.ecg_agent.harness.react import PROMPT, WINDOW_PROMPT
+        from cardioagent.ecg_agent.harness.autonomous_decision import PROMPT_PATH
+        prompt_path = WINDOW_PROMPT if llm_config.get('llm_window_interpretation') else PROMPT
+        if llm_config.get('event_review_mode'):
+            prompt_path = PROMPT_PATH
+        provenance['llm'] = dict(config=llm_config, prompt_sha256=digest(prompt_path))
         if llm_config.get('provider') == 'transformers':
             model_root = Path(llm_config['model_path'])
             provenance['llm']['model_files'] = {p.name: digest(p) for p in sorted(model_root.iterdir())
@@ -280,7 +306,9 @@ def run(args):
             folder = args.output / f'{channel.lower()}-{name}'
             results = [json.loads((folder / f'records/{task["record_id"]}/result.json').read_text(encoding='utf-8'))
                        for task in tasks.values()]
-            write_jsonl(folder / 'predictions.jsonl', [{'task_id': r['task_id'], 'intervals': r['intervals']} for r in results])
+            write_jsonl(folder / 'predictions.jsonl', [
+                {key: r[key] for key in ('task_id', 'intervals', 'burden_intervals') if key in r}
+                for r in results])
             save_json(folder / 'summary.json', {'records': len(results), 'mode': args.mode,
                       'config': variant_config.to_dict(), 'channel': channel,
                       'counts': {key: sum(r.get('counts', {}).get(key, 0) for r in results)

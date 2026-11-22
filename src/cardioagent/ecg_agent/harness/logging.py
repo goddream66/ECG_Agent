@@ -7,15 +7,16 @@ def write_line(stream, row):
 
 
 class JsonLogs:
-    def __init__(self, folder):
+    def __init__(self, folder, *, append=False):
+        self.mode = 'a' if append else 'w'
         self.folder = Path(folder)
         self.folder.mkdir(parents=True, exist_ok=True)
-        self.files = {name: (self.folder / f'{name}.jsonl').open('w', encoding='utf-8')
+        self.files = {name: (self.folder / f'{name}.jsonl').open(self.mode, encoding='utf-8')
                       for name in ('evidence', 'acquisitions', 'assessments', 'event_updates', 'window_trace')}
 
     def emit(self, name, row):
         if name == 'llm_steps' and name not in self.files:
-            self.files[name] = (self.folder / f'{name}.jsonl').open('w', encoding='utf-8')
+            self.files[name] = (self.folder / f'{name}.jsonl').open(self.mode, encoding='utf-8')
         write_line(self.files[name], row)
 
     def close(self):
