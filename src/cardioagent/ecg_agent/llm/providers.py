@@ -45,15 +45,29 @@ class LocalQwenModel:
 
     def complete(self, messages, tools):
         import torch
+        from time import perf_counter
+        started = perf_counter()
+        first_logits = []
+        def time_first_logits(ids, scores):
+            if not first_logits:
+                if scores.is_cuda:
+                    torch.cuda.synchronize(scores.device)
+                first_logits.append(perf_counter())
+            return scores
+        timing = os.environ.get('ECG_TIME_GENERATION') == '1'
         inputs = self.tokenizer.apply_chat_template(
             messages, tools=tools, tokenize=True, return_dict=True, return_tensors='pt',
             add_generation_prompt=True, enable_thinking=False).to(self.device)
+        prepared = perf_counter()
         with torch.inference_mode():
             output = self.model.generate(**inputs, do_sample=False,
+                                         **({'logits_processor':[time_first_logits]} if timing else {}),
                                          max_new_tokens=self.config.get('max_new_tokens', 512))
         n = inputs['input_ids'].shape[-1]
         raw = self.tokenizer.decode(output[0, n:], skip_special_tokens=True)
         self.last_raw = raw
+        self.last_timing = ({'input_prepare_s': prepared-started, 'to_first_logits_s': first_logits[0]-started,
+                             'remaining_generation_and_decode_s': perf_counter()-first_logits[0]} if first_logits else {})
         return ModelReply(parse_qwen_tool_reply(raw), {'prompt_tokens': n,
                           'completion_tokens': output.shape[-1] - n})
 

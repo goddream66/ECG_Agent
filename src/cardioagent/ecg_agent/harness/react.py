@@ -1,4 +1,5 @@
 """Bounded ReAct review with selectable rule or model interpretation."""
+from .short_ids import EvidenceAliases
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -168,7 +169,7 @@ class ReActReview:
                  unified_event_decision=False, separate_final_decision=False,
                  rule_safety_fallback=False, memory_write=False, memory_retrieve=False,
                  llm_window_interpretation=False, llm_tool_max_calls=None,
-                 investigation_checkpoint=False, fact_history=False):
+                 investigation_checkpoint=False, fact_history=False, short_id_journal=None):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -201,6 +202,7 @@ class ReActReview:
         self.memory_retrieve = memory_retrieve
         self.pending_close = None
         self.last_action = None
+        self.short_ids = EvidenceAliases(short_id_journal) if short_id_journal else None
         self.history = []
         self.identity = None
         self.counts = {'llm_calls': 0, 'llm_ms': 0., 'llm_prompt_tokens': 0,
@@ -377,7 +379,8 @@ class ReActReview:
                     and not self.memory_retrieve and not (writable_evidence - written)):
                 final_phase = True
             if final_phase and not final_context_added:
-                aliases = {f'E{i}': row['evidence_id'] for i, row in enumerate(session.calls, 1)}
+                aliases = {(self.short_ids.display(row['evidence_id']) if self.short_ids else f'E{i}'): row['evidence_id']
+                           for i, row in enumerate(session.calls, 1)}
                 messages.append({'role': 'user', 'content': json.dumps({
                     'phase': 'final_decision',
                     'active_event_id': (tracker.active or {}).get('event_id'),
@@ -416,7 +419,8 @@ class ReActReview:
                                            else tools)
                         if budget_exhausted and self.memory_retrieve:
                             available_tools = [t for t in available_tools if t['function']['name'] not in allowed]
-                    reply = self.model.complete(deepcopy(messages), deepcopy(available_tools))
+                    model_messages = self.short_ids.messages(messages) if self.short_ids else deepcopy(messages)
+                    reply = self.model.complete(model_messages, deepcopy(available_tools))
                 finally:
                     self.counts['llm_ms'] += (perf_counter() - began) * 1000
                 for key in ('prompt_tokens', 'completion_tokens'):
@@ -432,6 +436,8 @@ class ReActReview:
                 if not isinstance(args, dict):
                     raise ValueError('Tool arguments must be an object')
                 audit.update(action=name, arguments=deepcopy(args))
+                if self.short_ids:
+                    args = self.short_ids.arguments(args)
                 if (self.separate_final_decision or name in ('write_memory', 'retrieve_memory')) and name not in {
                         t['function']['name'] for t in available_tools}:
                     raise ValueError('Tool is not available in this phase')
