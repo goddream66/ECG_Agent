@@ -34,6 +34,8 @@ _MODEL_INFO = None
 
 
 def run_job(job):
+    if (job.get('llm') or {}).get('event_review_mode'):
+        job = {**job, 'episode_decision_protocol': 'attributed-evidence-v1'}
     target = Path(job['target'])
     if target.exists():
         result_file = target / 'result.json'

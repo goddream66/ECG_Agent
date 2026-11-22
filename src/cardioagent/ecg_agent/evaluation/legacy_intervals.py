@@ -4,8 +4,8 @@ from statistics import mean
 from cardioagent.common.io import digest, save_json
 from cardioagent.legacy.multimodal.provenance import save_provenance
 from cardioagent.common.io import read_jsonl
-from cardioagent.common.intervals import validate_intervals, union_seconds
-from cardioagent.ecg_agent.evaluation.intervals import interval_metrics, burden_score
+from cardioagent.common.intervals import validate_intervals
+from cardioagent.ecg_agent.evaluation.intervals import burden_metrics, interval_metrics, mean_burdens
 
 
 def score_files(references,predictions,output):
@@ -19,14 +19,10 @@ def score_files(references,predictions,output):
         expected=validate_intervals(ref['intervals'],start,end)
         actual=validate_intervals(pred[task_id]['intervals'],start,end)
         metrics=interval_metrics(actual,expected,float(ref['tau']))
-        supported = validate_intervals(pred[task_id].get('burden_intervals', actual), start, end)
-        burden=union_seconds(supported)/(end-start)
-        target=float(ref['burden'])
-        if not 0<=target<=1:raise ValueError('Reference burden must lie in [0,1]')
+        support = pred[task_id].get('burden_intervals')
+        supported = None if support is None else validate_intervals(support, start, end)
         rows.append({'task_id':task_id,'reference_positive':bool(expected),
-            'duration_s':end-start,**metrics,'predicted_burden':burden,'reference_burden':target,
-            'burden_absolute_error_pp':abs(burden-target)*100,
-            'burden_score':burden_score(burden,target,float(ref['burden_floor']))})
+            'duration_s':end-start,**metrics,**burden_metrics(actual, supported, {**ref,'start_s':start,'end_s':end})})
     positives=[r for r in rows if r['reference_positive']];negatives=[r for r in rows if not r['reference_positive']]
     tp=sum(r['tp'] for r in rows);fp=sum(r['fp'] for r in rows);fn=sum(r['fn'] for r in rows)
     denominator=2*tp+fp+fn
@@ -36,8 +32,7 @@ def score_files(references,predictions,output):
         'positive_macro_episode_f1':mean(r['f1'] for r in positives) if positives else None,
         'negative_macro_episode_f1':mean(r['f1'] for r in negatives) if negatives else None,
         'micro_episode_f1':2*tp/denominator if denominator else 1.,'tp':tp,'fp':fp,'fn':fn,
-        'mean_burden_score':mean(r['burden_score'] for r in rows),
-        'mean_burden_absolute_error_pp':mean(r['burden_absolute_error_pp'] for r in rows),
+        **mean_burdens(rows),
         'false_events_per_recording_hour':fp/(sum(r['duration_s'] for r in rows)/3600),
         'rows':rows,'limitations':[
             'Scores final intervals only; no online latency, costs or memory performance is inferred.',

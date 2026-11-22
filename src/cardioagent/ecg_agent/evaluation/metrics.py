@@ -8,7 +8,7 @@ import numpy as np
 import wfdb
 
 from cardioagent.common.io import digest, save_json
-from cardioagent.ecg_agent.evaluation.intervals import interval_metrics, iou
+from cardioagent.ecg_agent.evaluation.intervals import burden_metrics, interval_metrics, iou, mean_burdens
 from cardioagent.common.intervals import union_seconds, validate_intervals
 from cardioagent.common.io import read_jsonl
 
@@ -153,7 +153,7 @@ def evaluate_record(task_id, predicted, reference, *, valid=None, unknown=(), up
            'unknown_timeout_events': sum(e.get('termination_reason') == 'unknown_timeout' for e in events),
            'candidate_timeout_events': sum(e.get('termination_reason') == 'candidate_timeout' for e in events),
            'right_censored_events': sum(e.get('right_censored', False) for e in events),
-           'burden_absolute_error_pp': abs(union_seconds(supported)/(end-start)-reference['burden'])*100}
+           **burden_metrics(actual, supported if burden_intervals is not None else None, reference)}
     # Negative time crossed by a merged prediction, not merely the count of merged events.
     crossed = 0.
     for prediction, n in zip(actual, intersections):
@@ -189,7 +189,7 @@ def aggregate(rows):
               'long30_fragment_excess': sums['long30_fragment_excess'],
               'merge_rate': ratio(sums['merged_predictions'], sums['prediction_count']),
               'merge_crossed_non_af_s': sums['merge_crossed_non_af_s'],
-              'mean_burden_absolute_error_pp': sum(r['burden_absolute_error_pp'] for r in rows)/len(rows) if rows else None,
+              **mean_burdens(rows),
               'extra_calls_per_hour': ratio(sums['extra_tool_calls'], sums['duration_s']/3600),
               'model_calls': sums['model_calls'], 'extra_tool_calls': sums['extra_tool_calls'],
               'actual_model_calls': sums['actual_model_calls'], 'other_tool_seconds': sums['other_tool_ms']/1000,
@@ -209,7 +209,8 @@ def paired_bootstrap(rows, baseline, *, repetitions=2000, seed=20261114):
         raise ValueError('Paired records differ')
     baseline = [by_id[r['task_id']] for r in rows]
     metrics = ('micro_episode_f1', 'time_recall', 'non_af_alarm_minutes', 'short_event_recall',
-               'long_fragments_per_reference', 'mean_burden_absolute_error_pp', 'extra_calls_per_hour')
+               'long_fragments_per_reference', 'mean_burden_absolute_error_pp', 'mean_burden_score',
+               'mean_supported_burden_score', 'extra_calls_per_hour')
     generator = np.random.default_rng(seed)
     differences = {key: [] for key in metrics}
     for _ in range(repetitions):
@@ -217,6 +218,13 @@ def paired_bootstrap(rows, baseline, *, repetitions=2000, seed=20261114):
         new = aggregate([rows[i] for i in indices])
         old = aggregate([baseline[i] for i in indices])
         for key in metrics:
+            if key == 'mean_supported_burden_score':
+                paired = [(rows[i]['supported_burden_score'], baseline[i]['supported_burden_score'])
+                          for i in indices if rows[i].get('supported_burden_score') is not None
+                          and baseline[i].get('supported_burden_score') is not None]
+                if paired:
+                    differences[key].append(sum(a-b for a,b in paired)/len(paired))
+                continue
             if new[key] is not None and old[key] is not None:
                 differences[key].append(new[key]-old[key])
     return {'unit': 'record; subject mapping unavailable, residual identity leakage not excluded',

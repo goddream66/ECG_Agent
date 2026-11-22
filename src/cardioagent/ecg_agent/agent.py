@@ -272,6 +272,7 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
         extra = dict(review_mode=review_mode, event_control='qwen_open_close',
                      event_boundary_projection='midpoint_of_bracket', burden_intervals=supported,
                      supported_seconds=sum(b-a for a,b in supported),
+                     conflict_intervals=merge_spans(tracker.conflicts),
                      unknown_intervals=unknown, pending_questions=deepcopy(tracker.questions))
     if policy == 'event-react':
         totals.update(reviewer.counts)

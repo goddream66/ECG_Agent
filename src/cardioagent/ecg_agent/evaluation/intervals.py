@@ -29,3 +29,29 @@ def burden_score(predicted,reference,floor=.02):
     if not all(math.isfinite(x) for x in (predicted,reference,floor)) or floor<=0:
         raise ValueError('Finite values and positive floor required')
     return max(0.,1-abs(predicted-reference)/max(abs(reference),floor))
+
+
+def burden_metrics(intervals, support, reference):
+    duration = reference['end_s'] - reference['start_s']
+    target = float(reference['burden'])
+    if not 0 <= target <= 1:
+        raise ValueError('Reference burden must lie in [0,1]')
+    floor = float(reference.get('burden_floor', .02))
+    predicted = union_seconds(intervals) / duration
+    supported = None if support is None else union_seconds(support) / duration
+    return dict(predicted_burden=predicted, reference_burden=target, burden_floor=floor,
+                burden_score=burden_score(predicted, target, floor),
+                burden_absolute_error_pp=100 * abs(predicted - target),
+                supported_burden=supported,
+                supported_burden_score=None if supported is None else burden_score(supported, target, floor),
+                supported_burden_absolute_error_pp=None if supported is None else 100 * abs(supported - target))
+
+
+def mean_burdens(rows):
+    report = {}
+    for name in ('burden_score', 'burden_absolute_error_pp',
+                 'supported_burden_score', 'supported_burden_absolute_error_pp'):
+        values = [r[name] for r in rows if r.get(name) is not None]
+        report['mean_' + name] = sum(values) / len(values) if values else None
+    report['supported_burden_records'] = sum(r.get('supported_burden') is not None for r in rows)
+    return report

@@ -33,6 +33,26 @@ def representative(boundary):
     return boundary['first_supported_interval_s'][0]
 
 
+def subtract_spans(spans, exclusions):
+    cuts = merge_spans(exclusions)
+    result = []
+    i = 0
+    for a, b in merge_spans(spans):
+        while i < len(cuts) and cuts[i][1] <= a:
+            i += 1
+        while i < len(cuts) and cuts[i][0] < b:
+            left, right = cuts[i]
+            if a < left:
+                result.append([a, left])
+            a = max(a, right)
+            if right >= b:
+                break
+            i += 1
+        if a < b:
+            result.append([a, b])
+    return result
+
+
 class AutonomousEvents:
     def __init__(self, mode, start):
         self.mode = mode
@@ -43,6 +63,7 @@ class AutonomousEvents:
         self.questions = []
         self.unregistered_support = []
         self.unknown = []
+        self.conflicts = []
 
     @property
     def state(self):
@@ -56,23 +77,7 @@ class AutonomousEvents:
     def support(self):
         positive = merge_spans(self.unregistered_support + [span for event in self.events
                                for span in event['confirmed_support_intervals']])
-        unknown = merge_spans(self.unknown)
-        result = []
-        i = 0
-        for a, b in positive:
-            while i < len(unknown) and unknown[i][1] <= a:
-                i += 1
-            while i < len(unknown) and unknown[i][0] < b:
-                left, right = unknown[i]
-                if a < left:
-                    result.append([a, left])
-                a = max(a, right)
-                if right >= b:
-                    break
-                i += 1
-            if a < b:
-                result.append([a, b])
-        return result
+        return subtract_spans(positive, self.unknown)
 
     def due(self, end):
         return self.next_review is None or end >= self.next_review
@@ -107,24 +112,37 @@ class AutonomousEvents:
                 break
         return found
 
-    def _coverage(self, start, end, measured, assessment, *, after=None):
-        observed_start = start if after is None else max(start, after)
-        covered = merge_spans((max(observed_start, a), min(end, b)) for a, b in measured)
-        unknown = list(gaps(start, end, covered)) if assessment in ('SUPPORTS_TARGET', 'AGAINST_TARGET') else [[start,end]]
+    def _coverage(self, start, end, supports, opposes, action=None, boundary=None):
+        def clip(spans, lo, hi):
+            return merge_spans((max(lo, a), min(hi, b)) for a,b in spans)
+
+        positive = clip(supports, start, end)
+        negative = clip(opposes, start, end)
+        conflicts = merge_spans((max(a,c), min(b,d)) for a,b in positive for c,d in negative)
+        self.conflicts.extend(conflicts)
+        positive = subtract_spans(positive, conflicts)
+        negative = subtract_spans(negative, conflicts)
+        if boundary:
+            point = representative(boundary)
+            lo, hi = boundary.get('range_s', [point, point])
+            if action == 'OPEN':
+                positive = clip(positive, max(start, hi), end)
+                negative = clip(negative, start, min(end, lo))
+            else:
+                positive = clip(positive, start, min(end, lo))
+                negative = clip(negative, max(start, hi), end)
+        unknown = list(gaps(start, end, positive + negative))
         self.unknown.extend(unknown)
         if self.active:
             self.active['unknown_intervals'].extend(deepcopy(unknown))
-        if assessment == 'SUPPORTS_TARGET':
-            if self.active:
-                self.active['confirmed_support_intervals'].extend(covered)
-            else:
-                self.unregistered_support.extend(covered)
-        elif assessment == 'AGAINST_TARGET' and self.active:
-            self.active['opposing_intervals'].extend(covered)
+            self.active['confirmed_support_intervals'].extend(positive)
+            self.active['opposing_intervals'].extend(negative)
+        else:
+            self.unregistered_support.extend(positive)
 
     def skip(self, start, end, *, retry=False):
         self.cursor = end
-        self._coverage(start, end, [], None)
+        self._coverage(start, end, [], [])
         if retry:
             self.next_review = None  # first arriving batch retries; no model appointment
 
@@ -145,10 +163,7 @@ class AutonomousEvents:
                                start_evidence_ids=payload['evidence_ids'][:], reported_intervals=[], final_status='OPEN')
             self.events.append(self.active)
             update = dict(kind='confirm', interval=[onset,end])
-        after = None
-        if boundary:
-            after = boundary['range_s'][1] if boundary['kind'] == 'bracketed' else representative(boundary)
-        self._coverage(start, end, payload['measured_intervals'], payload['assessment'], after=after)
+        self._coverage(start, end, payload['support_intervals'], payload['opposing_intervals'], action, boundary)
         if action == 'CLOSE':
             offset = representative(boundary)
             event = self.active

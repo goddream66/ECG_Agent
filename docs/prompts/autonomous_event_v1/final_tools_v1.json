@@ -1,0 +1,926 @@
+{
+  "no_open": {
+    "type": "function",
+    "function": {
+      "name": "submit_event_decision",
+      "description": "Record the observed rhythm, event action and next review.",
+      "parameters": {
+        "$defs": {
+          "Bracket": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "bracketed",
+                "title": "Kind",
+                "type": "string"
+              },
+              "range_s": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "title": "Range S",
+                "type": "array"
+              }
+            },
+            "required": [
+              "kind",
+              "range_s"
+            ],
+            "title": "Bracket",
+            "type": "object"
+          },
+          "EvidenceAttribution": {
+            "additionalProperties": false,
+            "properties": {
+              "evidence_id": {
+                "minLength": 1,
+                "title": "Evidence Id",
+                "type": "string"
+              },
+              "role": {
+                "enum": [
+                  "SUPPORTS_TARGET",
+                  "AGAINST_TARGET",
+                  "CONTEXT_ONLY"
+                ],
+                "title": "Role",
+                "type": "string"
+              }
+            },
+            "required": [
+              "evidence_id",
+              "role"
+            ],
+            "title": "EvidenceAttribution",
+            "type": "object"
+          },
+          "Pending": {
+            "additionalProperties": false,
+            "properties": {
+              "question": {
+                "minLength": 1,
+                "title": "Question",
+                "type": "string"
+              },
+              "expected_evidence": {
+                "minLength": 1,
+                "title": "Expected Evidence",
+                "type": "string"
+              }
+            },
+            "required": [
+              "question",
+              "expected_evidence"
+            ],
+            "title": "Pending",
+            "type": "object"
+          },
+          "Point": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "localized",
+                "title": "Kind",
+                "type": "string"
+              },
+              "time_s": {
+                "minimum": 0,
+                "title": "Time S",
+                "type": "number"
+              }
+            },
+            "required": [
+              "kind",
+              "time_s"
+            ],
+            "title": "Point",
+            "type": "object"
+          },
+          "UnobservedOnset": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "onset_unobserved",
+                "title": "Kind",
+                "type": "string"
+              },
+              "first_supported_interval_s": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "title": "First Supported Interval S",
+                "type": "array"
+              }
+            },
+            "required": [
+              "kind",
+              "first_supported_interval_s"
+            ],
+            "title": "UnobservedOnset",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "assessment": {
+            "enum": [
+              "SUPPORTS_TARGET",
+              "AGAINST_TARGET",
+              "UNCERTAIN"
+            ],
+            "title": "Assessment",
+            "type": "string"
+          },
+          "uncertainty_cause": {
+            "anyOf": [
+              {
+                "enum": [
+                  "missing",
+                  "unusable",
+                  "conflicting",
+                  "insufficient"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uncertainty Cause"
+          },
+          "event_action": {
+            "enum": [
+              "OPEN",
+              "RECORD_ONLY",
+              "DEFER_DECISION"
+            ],
+            "title": "Event Action",
+            "type": "string"
+          },
+          "boundary": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Point"
+              },
+              {
+                "$ref": "#/$defs/Bracket"
+              },
+              {
+                "$ref": "#/$defs/UnobservedOnset"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Boundary"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "evidence_attributions": {
+            "items": {
+              "$ref": "#/$defs/EvidenceAttribution"
+            },
+            "maxItems": 32,
+            "title": "Evidence Attributions",
+            "type": "array"
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Pending"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_review_s": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Review S"
+          },
+          "reason": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "assessment",
+          "uncertainty_cause",
+          "event_action",
+          "boundary",
+          "evidence_ids",
+          "evidence_attributions",
+          "pending",
+          "next_review_s",
+          "reason"
+        ],
+        "title": "IdleDecision",
+        "type": "object"
+      }
+    }
+  },
+  "open": {
+    "type": "function",
+    "function": {
+      "name": "submit_event_decision",
+      "description": "Record the observed rhythm, event action and next review.",
+      "parameters": {
+        "$defs": {
+          "Bracket": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "bracketed",
+                "title": "Kind",
+                "type": "string"
+              },
+              "range_s": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "title": "Range S",
+                "type": "array"
+              }
+            },
+            "required": [
+              "kind",
+              "range_s"
+            ],
+            "title": "Bracket",
+            "type": "object"
+          },
+          "EvidenceAttribution": {
+            "additionalProperties": false,
+            "properties": {
+              "evidence_id": {
+                "minLength": 1,
+                "title": "Evidence Id",
+                "type": "string"
+              },
+              "role": {
+                "enum": [
+                  "SUPPORTS_TARGET",
+                  "AGAINST_TARGET",
+                  "CONTEXT_ONLY"
+                ],
+                "title": "Role",
+                "type": "string"
+              }
+            },
+            "required": [
+              "evidence_id",
+              "role"
+            ],
+            "title": "EvidenceAttribution",
+            "type": "object"
+          },
+          "Pending": {
+            "additionalProperties": false,
+            "properties": {
+              "question": {
+                "minLength": 1,
+                "title": "Question",
+                "type": "string"
+              },
+              "expected_evidence": {
+                "minLength": 1,
+                "title": "Expected Evidence",
+                "type": "string"
+              }
+            },
+            "required": [
+              "question",
+              "expected_evidence"
+            ],
+            "title": "Pending",
+            "type": "object"
+          },
+          "Point": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "localized",
+                "title": "Kind",
+                "type": "string"
+              },
+              "time_s": {
+                "minimum": 0,
+                "title": "Time S",
+                "type": "number"
+              }
+            },
+            "required": [
+              "kind",
+              "time_s"
+            ],
+            "title": "Point",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "assessment": {
+            "enum": [
+              "SUPPORTS_TARGET",
+              "AGAINST_TARGET",
+              "UNCERTAIN"
+            ],
+            "title": "Assessment",
+            "type": "string"
+          },
+          "uncertainty_cause": {
+            "anyOf": [
+              {
+                "enum": [
+                  "missing",
+                  "unusable",
+                  "conflicting",
+                  "insufficient"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uncertainty Cause"
+          },
+          "event_action": {
+            "enum": [
+              "CLOSE",
+              "RECORD_ONLY",
+              "DEFER_DECISION"
+            ],
+            "title": "Event Action",
+            "type": "string"
+          },
+          "boundary": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Point"
+              },
+              {
+                "$ref": "#/$defs/Bracket"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Boundary"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "evidence_attributions": {
+            "items": {
+              "$ref": "#/$defs/EvidenceAttribution"
+            },
+            "maxItems": 32,
+            "title": "Evidence Attributions",
+            "type": "array"
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Pending"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_review_s": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Review S"
+          },
+          "reason": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "assessment",
+          "uncertainty_cause",
+          "event_action",
+          "boundary",
+          "evidence_ids",
+          "evidence_attributions",
+          "pending",
+          "next_review_s",
+          "reason"
+        ],
+        "title": "TrackingDecision",
+        "type": "object"
+      }
+    }
+  },
+  "no_open_resume": {
+    "type": "function",
+    "function": {
+      "name": "submit_event_decision",
+      "description": "Record the observed rhythm, event action and next review.",
+      "parameters": {
+        "$defs": {
+          "Bracket": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "bracketed",
+                "title": "Kind",
+                "type": "string"
+              },
+              "range_s": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "title": "Range S",
+                "type": "array"
+              }
+            },
+            "required": [
+              "kind",
+              "range_s"
+            ],
+            "title": "Bracket",
+            "type": "object"
+          },
+          "EvidenceAttribution": {
+            "additionalProperties": false,
+            "properties": {
+              "evidence_id": {
+                "minLength": 1,
+                "title": "Evidence Id",
+                "type": "string"
+              },
+              "role": {
+                "enum": [
+                  "SUPPORTS_TARGET",
+                  "AGAINST_TARGET",
+                  "CONTEXT_ONLY"
+                ],
+                "title": "Role",
+                "type": "string"
+              }
+            },
+            "required": [
+              "evidence_id",
+              "role"
+            ],
+            "title": "EvidenceAttribution",
+            "type": "object"
+          },
+          "Pending": {
+            "additionalProperties": false,
+            "properties": {
+              "question": {
+                "minLength": 1,
+                "title": "Question",
+                "type": "string"
+              },
+              "expected_evidence": {
+                "minLength": 1,
+                "title": "Expected Evidence",
+                "type": "string"
+              }
+            },
+            "required": [
+              "question",
+              "expected_evidence"
+            ],
+            "title": "Pending",
+            "type": "object"
+          },
+          "Point": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "localized",
+                "title": "Kind",
+                "type": "string"
+              },
+              "time_s": {
+                "minimum": 0,
+                "title": "Time S",
+                "type": "number"
+              }
+            },
+            "required": [
+              "kind",
+              "time_s"
+            ],
+            "title": "Point",
+            "type": "object"
+          },
+          "UnobservedOnset": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "onset_unobserved",
+                "title": "Kind",
+                "type": "string"
+              },
+              "first_supported_interval_s": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "title": "First Supported Interval S",
+                "type": "array"
+              }
+            },
+            "required": [
+              "kind",
+              "first_supported_interval_s"
+            ],
+            "title": "UnobservedOnset",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "assessment": {
+            "enum": [
+              "SUPPORTS_TARGET",
+              "AGAINST_TARGET",
+              "UNCERTAIN"
+            ],
+            "title": "Assessment",
+            "type": "string"
+          },
+          "uncertainty_cause": {
+            "anyOf": [
+              {
+                "enum": [
+                  "missing",
+                  "unusable",
+                  "conflicting",
+                  "insufficient"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uncertainty Cause"
+          },
+          "event_action": {
+            "enum": [
+              "OPEN",
+              "RECORD_ONLY",
+              "DEFER_DECISION"
+            ],
+            "title": "Event Action",
+            "type": "string"
+          },
+          "boundary": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Point"
+              },
+              {
+                "$ref": "#/$defs/Bracket"
+              },
+              {
+                "$ref": "#/$defs/UnobservedOnset"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Boundary"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "evidence_attributions": {
+            "items": {
+              "$ref": "#/$defs/EvidenceAttribution"
+            },
+            "maxItems": 32,
+            "title": "Evidence Attributions",
+            "type": "array"
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Pending"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_review_s": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Review S"
+          },
+          "reason": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "pending_resolution": {
+            "enum": [
+              "resolved",
+              "withdrawn",
+              "still_pending"
+            ],
+            "title": "Pending Resolution",
+            "type": "string"
+          }
+        },
+        "required": [
+          "assessment",
+          "uncertainty_cause",
+          "event_action",
+          "boundary",
+          "evidence_ids",
+          "evidence_attributions",
+          "pending",
+          "next_review_s",
+          "reason",
+          "pending_resolution"
+        ],
+        "title": "ResumeIdle",
+        "type": "object"
+      }
+    }
+  },
+  "open_resume": {
+    "type": "function",
+    "function": {
+      "name": "submit_event_decision",
+      "description": "Record the observed rhythm, event action and next review.",
+      "parameters": {
+        "$defs": {
+          "Bracket": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "bracketed",
+                "title": "Kind",
+                "type": "string"
+              },
+              "range_s": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "title": "Range S",
+                "type": "array"
+              }
+            },
+            "required": [
+              "kind",
+              "range_s"
+            ],
+            "title": "Bracket",
+            "type": "object"
+          },
+          "EvidenceAttribution": {
+            "additionalProperties": false,
+            "properties": {
+              "evidence_id": {
+                "minLength": 1,
+                "title": "Evidence Id",
+                "type": "string"
+              },
+              "role": {
+                "enum": [
+                  "SUPPORTS_TARGET",
+                  "AGAINST_TARGET",
+                  "CONTEXT_ONLY"
+                ],
+                "title": "Role",
+                "type": "string"
+              }
+            },
+            "required": [
+              "evidence_id",
+              "role"
+            ],
+            "title": "EvidenceAttribution",
+            "type": "object"
+          },
+          "Pending": {
+            "additionalProperties": false,
+            "properties": {
+              "question": {
+                "minLength": 1,
+                "title": "Question",
+                "type": "string"
+              },
+              "expected_evidence": {
+                "minLength": 1,
+                "title": "Expected Evidence",
+                "type": "string"
+              }
+            },
+            "required": [
+              "question",
+              "expected_evidence"
+            ],
+            "title": "Pending",
+            "type": "object"
+          },
+          "Point": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "localized",
+                "title": "Kind",
+                "type": "string"
+              },
+              "time_s": {
+                "minimum": 0,
+                "title": "Time S",
+                "type": "number"
+              }
+            },
+            "required": [
+              "kind",
+              "time_s"
+            ],
+            "title": "Point",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "assessment": {
+            "enum": [
+              "SUPPORTS_TARGET",
+              "AGAINST_TARGET",
+              "UNCERTAIN"
+            ],
+            "title": "Assessment",
+            "type": "string"
+          },
+          "uncertainty_cause": {
+            "anyOf": [
+              {
+                "enum": [
+                  "missing",
+                  "unusable",
+                  "conflicting",
+                  "insufficient"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uncertainty Cause"
+          },
+          "event_action": {
+            "enum": [
+              "CLOSE",
+              "RECORD_ONLY",
+              "DEFER_DECISION"
+            ],
+            "title": "Event Action",
+            "type": "string"
+          },
+          "boundary": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Point"
+              },
+              {
+                "$ref": "#/$defs/Bracket"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Boundary"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "evidence_attributions": {
+            "items": {
+              "$ref": "#/$defs/EvidenceAttribution"
+            },
+            "maxItems": 32,
+            "title": "Evidence Attributions",
+            "type": "array"
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Pending"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_review_s": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Review S"
+          },
+          "reason": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "pending_resolution": {
+            "enum": [
+              "resolved",
+              "withdrawn",
+              "still_pending"
+            ],
+            "title": "Pending Resolution",
+            "type": "string"
+          }
+        },
+        "required": [
+          "assessment",
+          "uncertainty_cause",
+          "event_action",
+          "boundary",
+          "evidence_ids",
+          "evidence_attributions",
+          "pending",
+          "next_review_s",
+          "reason",
+          "pending_resolution"
+        ],
+        "title": "ResumeTracking",
+        "type": "object"
+      }
+    }
+  }
+}

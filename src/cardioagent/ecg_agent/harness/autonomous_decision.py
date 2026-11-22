@@ -1,5 +1,4 @@
 """Contract used by both event-ledger arms. Only the ledger executes decisions."""
-from copy import deepcopy
 from functools import lru_cache
 import json
 from pathlib import Path
@@ -50,12 +49,18 @@ class Pending(StrictModel):
     expected_evidence: str = Field(min_length=1)
 
 
+class EvidenceAttribution(StrictModel):
+    evidence_id: str = Field(min_length=1)
+    role: Literal['SUPPORTS_TARGET', 'AGAINST_TARGET', 'CONTEXT_ONLY']
+
+
 class Decision(StrictModel):
     assessment: Literal['SUPPORTS_TARGET', 'AGAINST_TARGET', 'UNCERTAIN']
     uncertainty_cause: Literal['missing', 'unusable', 'conflicting', 'insufficient'] | None
     event_action: Literal['OPEN', 'RECORD_ONLY', 'DEFER_DECISION', 'CLOSE']
     boundary: Point | Bracket | UnobservedOnset | None
     evidence_ids: list[str] = Field(max_length=32)
+    evidence_attributions: list[EvidenceAttribution] = Field(max_length=32)
     pending: Pending | None
     next_review_s: float | None = Field(ge=0)
     reason: str = Field(min_length=1, max_length=4096)
@@ -114,7 +119,9 @@ def bounds(boundary):
 
 
 def is_rhythm(row):
-    return row['status'] == 'ok' and row['tool'] != 'assess_quality' and not row['result'].get('detector_error')
+    return (row['status'] == 'ok' and bool(row['window_s'])
+            and row['tool'] not in ('assess_quality', 'assess_template_quality')
+            and not row['result'].get('detector_error'))
 
 
 def overlap(span, start, end):
@@ -134,17 +141,37 @@ def validate(args, aliases, visible_ids, ledger, snapshot, boundary_tools):
     ids = [aliases.get(key, key) for key in decision.evidence_ids]
     if len(ids) != len(set(ids)) or not set(ids) <= visible_ids:
         raise ValueError('Cite distinct measurements visible in this review')
+    roles = {aliases.get(item.evidence_id, item.evidence_id): item.role
+             for item in decision.evidence_attributions}
+    if len(roles) != len(decision.evidence_attributions) or set(ids) != roles.keys():
+        raise ValueError('Assign exactly one role to each cited measurement')
     rows = [ledger.get(key) for key in ids]
     start, end = snapshot['window_s']
-    if any(not r['window_s'] or r['available_at_s'] > end or r['window_s'][1] > end for r in rows):
+    if any(r['available_at_s'] > end or (r['window_s'] and r['window_s'][1] > end) for r in rows):
         raise ValueError('Evidence must already have arrived')
-    current = [r for r in rows if is_rhythm(r) and overlap(r['window_s'], start, end)]
-    if decision.assessment != 'UNCERTAIN' and not current:
-        raise ValueError('Directional observation needs successful rhythm evidence from the assessed interval')
-    if decision.uncertainty_cause == 'conflicting' and not any(
-            (a['tool'], a['lead'], a['window_s']) != (b['tool'], b['lead'], b['window_s'])
-            and overlap(a['window_s'], *b['window_s']) for a in current for b in current):
-        raise ValueError('Conflict needs two distinct rhythm measurements over comparable times')
+    directional = {'SUPPORTS_TARGET': [], 'AGAINST_TARGET': []}
+    current_spans = {role: [] for role in directional}
+    measured_roles = {}
+    for key, row in zip(ids, rows):
+        role = roles[key]
+        if role == 'CONTEXT_ONLY':
+            continue
+        if not is_rhythm(row):
+            raise ValueError('Quality and unsuccessful rhythm measurements require CONTEXT_ONLY')
+        measurement = (row['tool'], row['lead'], tuple(row['window_s']))
+        if measured_roles.setdefault(measurement, role) != role:
+            raise ValueError('Repeated copies of the same measurement cannot have opposite roles')
+        directional[role].append(row)
+        a, b = row['window_s']
+        if overlap((a,b), start, end):
+            current_spans[role].append([max(start,a), min(end,b)])
+    if decision.assessment in current_spans and not current_spans[decision.assessment]:
+        raise ValueError('Directional observation needs a matching rhythm attribution in the assessed interval')
+    conflict = any(overlap(a, *b) for a in current_spans['SUPPORTS_TARGET'] for b in current_spans['AGAINST_TARGET'])
+    if conflict and decision.uncertainty_cause != 'conflicting':
+        raise ValueError('Opposite roles overlapping in this interval require UNCERTAIN with cause conflicting')
+    if not conflict and decision.uncertainty_cause == 'conflicting':
+        raise ValueError('Conflict needs two distinct rhythm measurements with overlapping opposite roles')
     if snapshot['stream_end']:
         if decision.next_review_s is not None:
             raise ValueError('At stream end use next_review_s=null')
@@ -165,8 +192,9 @@ def validate(args, aliases, visible_ids, ledger, snapshot, boundary_tools):
             if not any(times and min(times) < a < max(times) for times in map(timed_beats, local)):
                 raise ValueError('A point needs a local measured change with beats before and after it; otherwise bracket it')
         elif isinstance(decision.boundary, UnobservedOnset):
-            if b <= a or not any(r['window_s'][0] <= a < b <= r['window_s'][1] for r in rhythm):
-                raise ValueError('Cite a successful rhythm measurement covering the first supported interval')
+            if b <= a or not any(r['window_s'][0] <= a < b <= r['window_s'][1]
+                                 for r in directional['SUPPORTS_TARGET']):
+                raise ValueError('Cite positive rhythm evidence covering the first supported interval')
         else:
             # A local measurement spanning the change, or separate measured
             # intervals anchoring each side, can support a bracket.
@@ -178,9 +206,11 @@ def validate(args, aliases, visible_ids, ledger, snapshot, boundary_tools):
             raise ValueError('End must follow the registered onset')
     payload = decision.model_dump()
     payload['evidence_ids'] = ids
-    payload['measured_intervals'] = [deepcopy(r['window_s']) for r in current]
+    payload['evidence_attributions'] = [dict(evidence_id=key, role=roles[key]) for key in ids]
+    payload['support_intervals'] = current_spans['SUPPORTS_TARGET']
+    payload['opposing_intervals'] = current_spans['AGAINST_TARGET']
     if isinstance(decision.boundary, UnobservedOnset):
         a, b = bounds(decision.boundary)
-        payload['first_support_available_at_s'] = min(r['available_at_s'] for r in rhythm
+        payload['first_support_available_at_s'] = min(r['available_at_s'] for r in directional['SUPPORTS_TARGET']
                                                        if r['window_s'][0] <= a < b <= r['window_s'][1])
     return payload
