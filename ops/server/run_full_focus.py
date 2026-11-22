@@ -31,7 +31,6 @@ class Recorder:
         record = dict(cursor_s=json.loads(messages[1]['content'])['window_s'][1],
                       messages=messages, tools=tools)
         self.model.last_raw = None
-        self.model.last_timing = {}
         try:
             response = self.model.complete(messages, tools)
             record.update(message=response.message, usage=response.usage)
@@ -42,8 +41,6 @@ class Recorder:
         finally:
             self.last_raw = getattr(self.model, 'last_raw', None)
             record.update(raw=self.last_raw, elapsed_s=time.monotonic()-started)
-            if self.model.last_timing:
-                record["timing"] = self.model.last_timing
             with gzip.open(self.output, 'at', encoding='utf8') as stream:
                 stream.write(json.dumps(record, allow_nan=False)+'\n')
 

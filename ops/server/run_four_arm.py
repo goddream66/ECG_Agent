@@ -35,14 +35,13 @@ def fixed(output, model, args, prompt):
     schema = {'type':'function','function':{'name':'submit_event_decision',
               'description':'Submit one current-window assessment.',
               'parameters':WindowEventDecision.model_json_schema()}}
-    ids = react.EvidenceAliases(output/"aliases.jsonl") if args.short_ids else None
     results = []
     for case in cases:
         a,b = case['window_s']
         hist = history[b]
         if args.arm == 'D':
             hist = react.factual_history(hist)
-        aliases = {(ids.display(r['evidence_id']) if ids else f'E{i}'):r for i,r in enumerate(case['evidence'],1)}
+        aliases = {f'E{i}':r for i,r in enumerate(case['evidence'],1)}
         assert all(r['window_s']==[a,b] and r['available_at_s']<=b for r in aliases.values())
         state = dict(window_s=[a,b], state='IDLE', active_event=None, recent_windows=hist,
                      current_evidence=[dict(r,id=k) for k,r in aliases.items()])
@@ -50,7 +49,7 @@ def fixed(output, model, args, prompt):
                     {'role':'user','content':json.dumps(state,allow_nan=False)}]
         answer = {'window_s':[a,b]}
         try:
-            reply = model.complete(ids.messages(messages) if ids else messages,[schema])
+            reply = model.complete(messages,[schema])
             fn=reply.message['tool_calls'][0]['function']
             if fn['name']!='submit_event_decision':
                 raise ValueError('Unexpected tool')
@@ -77,7 +76,6 @@ def main():
         p.add_argument('--'+k,type=Path,required=True)
     p.add_argument('--arm',choices=list('ABCD'),required=True)
     p.add_argument('--phase',choices=['fixed','online'],required=True)
-    p.add_argument('--short-ids',action='store_true')
     args=p.parse_args()
     torch.set_num_threads(2)
     torch.set_num_interop_threads(1)
@@ -93,7 +91,7 @@ def main():
     out.mkdir(parents=True,exist_ok=False)
     task=dict(task_id='full-04936',start_s=1550,end_s=1850)
     save(out/'experiment.json',dict(arm=args.arm,phase=args.phase,task=task,llm=cfg,
-         short_ids=args.short_ids,cpu_affinity=sorted(os.sched_getaffinity(0)),gpu=os.environ['CUDA_VISIBLE_DEVICES'],
+         cpu_affinity=sorted(os.sched_getaffinity(0)),gpu=os.environ['CUDA_VISIBLE_DEVICES'],
          harness_sha256=hashlib.sha256(Path(react.__file__).read_bytes()).hexdigest(),
          fixed_evidence_sha256=hashlib.sha256(args.evidence.read_bytes()).hexdigest()))
     (out/'prompt.txt').write_text(prompt)
@@ -105,7 +103,7 @@ def main():
     record=next(r for r in json.loads((cache/'manifest.json').read_text())['records'] if r['record_id']=='04936')
     scorer,info,load_ms=build_model('live',args.storage/'models',2,'cpu')
     opts={k:v for k,v in cfg.items() if k not in {'provider','model_path','device','max_new_tokens'}}
-    reviewer=react.ReActReview(model,live_scoring=True,short_id_journal=(out/"aliases.jsonl" if args.short_ids else None),**opts)
+    reviewer=react.ReActReview(model,live_scoring=True,**opts)
     logs=ContinuousLogs(out)
     try:
         result=replay_event_record(cache,record,task,'ECG1',EventConfig(),lambda lead,x,loc:scorer(x),
