@@ -8,10 +8,11 @@ import time
 import run_04936_attribution_pair as base
 
 
-def main():
+def main(*, split_event=False):
     old_root = base.OUTPUT
     checkout = Path(__file__).resolve().parents[2]
-    root = base.STORAGE/'runs/04936-grounding-v14-1550-1850-r1'
+    experiment = '04936-event-v15' if split_event else '04936-grounding-v14'
+    root = base.STORAGE/'runs'/f'{experiment}-1550-1850-r1'
     root.mkdir(exist_ok=True,parents=True)
     if (root/'status.json').exists():
         raise FileExistsError(root/'status.json')
@@ -52,17 +53,18 @@ def main():
                     raise RuntimeError('Worker failed: '+str(jobs))
                 return jobs
             time.sleep(5)
-    fixed=[]
-    old_code=Path.home()/'ECGagent-experiments/04936-attribution-v13/new'
-    for version,code in [('v13',old_code),('v14',checkout)]:
-        for lead in ('ecg1','ecg2'):
-            name=f'frozen-{version}-{lead}'
-            source=old_root/f'new-autonomous-{lead}'/f'{lead}-event-react/records/04936/evidence.jsonl'
-            fixed.append(launch(len(fixed),name,[Path(__file__).with_name('replay_04936_frozen.py'),
-                                '--source',source,'--config',code/'configs/ecg/react_qwen_episode_fixed.json',
-                                '--output',root/name],code))
-    frozen_jobs=finish(fixed,'frozen')
-    base.save('frozen_results.json',{j['name']:json.loads((root/j['name']/'summary.json').read_text()) for j in frozen_jobs})
+    if not split_event:
+        fixed=[]
+        old_code=Path.home()/'ECGagent-experiments/04936-attribution-v13/new'
+        for version,code in [('v13',old_code),('v14',checkout)]:
+            for lead in ('ecg1','ecg2'):
+                name=f'frozen-{version}-{lead}'
+                source=old_root/f'new-autonomous-{lead}'/f'{lead}-event-react/records/04936/evidence.jsonl'
+                fixed.append(launch(len(fixed),name,[Path(__file__).with_name('replay_04936_frozen.py'),
+                                    '--source',source,'--config',code/'configs/ecg/react_qwen_episode_fixed.json',
+                                    '--output',root/name],code))
+        frozen_jobs=finish(fixed,'frozen')
+        base.save('frozen_results.json',{j['name']:json.loads((root/j['name']/'summary.json').read_text()) for j in frozen_jobs})
     live=[]
     for mode in ('fixed','autonomous'):
         for lead in ('ECG1','ECG2'):
@@ -70,11 +72,14 @@ def main():
             live.append(launch(len(live),name,['-m','cardioagent.ecg_agent.experiments.runner',
                       '--mode','live','--policies','event-react','--workers','1','--threads','2','--device','cuda:0',
                       '--tasks',root/'task.jsonl','--channels',lead,'--llm-config',
-                      checkout/f'configs/ecg/react_qwen_episode_{mode}.json','--output',root/name],checkout))
+                      checkout/'configs/ecg'/('react_qwen_episode_'+mode+('_v15' if split_event else '')+'.json'),'--output',root/name],checkout))
     jobs=finish(live,'live')
     base.summarize(jobs,task,original['task_id'])
     base.save('status.json',dict(stage='complete',jobs=jobs))
 
 
 if __name__=='__main__':
-    main()
+    import argparse
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--split-event',action='store_true')
+    main(split_event=parser.parse_args().split_event)

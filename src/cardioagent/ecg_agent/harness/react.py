@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from cardioagent.ecg_agent.policies.rule_review import decide_event
 from .event_decision import WindowEventDecision, overlaps_current, validate_grounding
-from . import autonomous_decision
+from . import autonomous_decision, split_event
 
 PROMPT = Path(__file__).resolve().parents[1] / 'prompts/react_review_v1.txt'
 WINDOW_PROMPT = PROMPT.with_name('react_window_decision_v2.txt')
@@ -172,7 +172,7 @@ class ReActReview:
                  rule_safety_fallback=False, memory_write=False, memory_retrieve=False,
                  llm_window_interpretation=False, llm_tool_max_calls=None,
                  investigation_checkpoint=False, fact_history=False, event_review_mode=None,
-                 compact_final_evidence=True):
+                 compact_final_evidence=True, split_event_review=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -194,6 +194,7 @@ class ReActReview:
         if event_review_mode and (not llm_window_interpretation or rule_safety_fallback or investigation_checkpoint):
             raise ValueError('Autonomous events require separate LLM interpretation without rule fallback or focus checkpoint')
         self.event_review_mode = event_review_mode
+        self.split_event_review = split_event_review
         self.compact_final_evidence = compact_final_evidence
         self.investigation_checkpoint = investigation_checkpoint
         self.fact_history = fact_history
@@ -372,11 +373,20 @@ class ReActReview:
                          retained_window_s=[session.context.origin_s,end],
                          ecgfounder_scope='retained_10s_window' if self.live_scoring else 'current_window_only',
                          recent_windows=factual_history(self.history) if self.fact_history else deepcopy(self.history))
-            messages = [{'role':'system', 'content':autonomous_decision.prompt(state, 'acquire')},
+            if self.split_event_review and tracker.active:
+                for field in ('confirmed_support_intervals','opposing_intervals','unknown_intervals'):
+                    state['open_event'][field] = deepcopy(tracker.active[field][-3:])
+            contract = split_event if self.split_event_review else autonomous_decision
+            messages = [{'role':'system', 'content':contract.prompt(state, 'acquire')},
                         {'role':'user', 'content':json.dumps(state, allow_nan=False)}]
             tools = [tool for tool in session.registry.function_schemas(include_experimental=True)
                      if tool['function']['name'] in allowed]
-            tools += [autonomous_decision.final_tool(state),
+            if self.split_event_review:
+                tools = deepcopy(tools)
+                for tool in tools:
+                    fn = tool['function']
+                    fn['description'] += ' ' + split_event.TOOL_GUIDE[fn['name']]
+            tools += [contract.final_tool(state),
                       {'type':'function','function':{'name':'finish_measurements',
                        'description':'Finish this round of measurement and submit the observation and event action.',
                        'parameters':{'type':'object','properties':{},'additionalProperties':False}}}]
@@ -419,7 +429,7 @@ class ReActReview:
             if final_phase and not final_context_added:
                 aliases = {f'E{i}': row['evidence_id'] for i, row in enumerate(session.calls, 1)}
                 if self.event_review_mode:
-                    messages[0]['content'] = autonomous_decision.prompt(state, 'final')
+                    messages[0]['content'] = contract.prompt(state, 'final')
                     entries = [{'id': alias, 'evidence_id': key} for alias, key in aliases.items()]
                     for entry, row in zip(entries, session.calls):
                         entry.update({k: row[k] for k in ('tool', 'lead', 'window_s', 'status')})
@@ -566,9 +576,13 @@ class ReActReview:
                     continue
                 if name == 'submit_event_decision' and self.unified_event_decision:
                     if self.event_review_mode:
-                        self.last_action = autonomous_decision.validate(
+                        validate_event = split_event.event if self.split_event_review else autonomous_decision.validate
+                        self.last_action = validate_event(
                             args, aliases, set(aliases.values()) | visible_history | retrieved_ids,
                             ledger, state, CLOSURE_EVIDENCE_TOOLS)
+                        if self.split_event_review:
+                            scheduling = split_event.appointment(self.model,state,self.last_action,self.counts,emit,audit)
+                            self.last_action.update(scheduling)
                         self.last_action['action'] = self.last_action['event_action']
                         self.last_action['decision_source'] = 'llm'
                         stop = 'model_decision_' + self.last_action['action'].lower()
@@ -690,7 +704,7 @@ class ReActReview:
                         continue
                     decision_retries += 1
                     if decision_retries <= 1 and self.event_review_mode:
-                        messages[0]['content'] = autonomous_decision.prompt(state, 'final', retry=True)
+                        messages[0]['content'] = contract.prompt(state, 'final', retry=True)
                         messages.append({'role': 'user', 'content': 'Rejected: ' + str(exc)[:500]})
                         continue
                     if decision_retries <= 1:

@@ -36,10 +36,12 @@ def submit(assessment, action, ids, next_s, **kwargs):
 
 
 class EpisodeTests(unittest.TestCase):
-    def replay(self, mode, actions, n, *, future=None, interrupt_at=None):
+    def replay(self, mode, actions, n, *, future=None, interrupt_at=None, split=False):
         with TemporaryDirectory() as tmp:
             job = fixtures.EventCheckpointTests().make_job(Path(tmp))
             cfg = ROOT / f'configs/ecg/react_qwen_episode_{mode}.json'
+            if split:
+                cfg = cfg.with_stem(cfg.stem + '_v15')
             job.update(policy='event-react', llm=json.loads(cfg.read_text()))
             job['task']['end_s'] = n*10
             job['record'].update(source_samples=n*2500, source_record_samples=n*2500)
@@ -83,6 +85,27 @@ class EpisodeTests(unittest.TestCase):
             with gzip.open(folder/'qwen_calls.jsonl.gz', 'rt', encoding='utf-8') as stream:
                 requests = [json.loads(line) for line in stream]
             return result, read('window_trace'), read('event_updates'), read('llm_steps'), requests
+
+    def test_split_event_survives_rejected_appointment(self):
+        cite = dict(evidence_id='E1',field='afl_score',role='SUPPORTS_TARGET')
+        opened = reply('submit_event_decision',dict(assessment='SUPPORTS_TARGET',event_action='OPEN',
+             citations=[cite],boundary=dict(kind='onset_unobserved',first_supported_interval_s=[0,10]),
+             reason='AFL score favors the target on ECG1.'))
+        wait = reply('schedule_review',dict(delay_s=0))
+        close = reply('submit_event_decision',dict(assessment='AGAINST_TARGET',event_action='CLOSE',
+             citations=[dict(evidence_id='E1',field='af_score',role='AGAINST_TARGET'),
+                        dict(evidence_id='E2',role='CONTEXT_ONLY')],
+             boundary=dict(kind='bracketed',range_s=[12,16]),reason='Scripted boundary for an execution test.'))
+        for mode in ('fixed','autonomous'):
+            actions=[measure(0), FINISH, opened] + ([wait,wait] if mode=='autonomous' else [])
+            actions += [measure(10),measure(10,'detect_beats'),FINISH,close]
+            result,trace,updates,steps,_=self.replay(mode,actions,2,split=True)
+            self.assertEqual([r['action'] for r in trace],['OPEN','CLOSE'])
+            self.assertEqual(trace[0]['llm_action']['schedule_source'],
+                             'next_batch_recovery' if mode=='autonomous' else 'runtime')
+            self.assertEqual(trace[0]['llm_action']['measured_facts'][0]['field'],'afl_score')
+            self.assertEqual(result['intervals'],[[0,14]])
+            self.assertEqual(trace[-1]['next_review_s'],None)
 
     def test_autonomous_episode_pending_sleep_and_bracket(self):
         actions = [measure(0), FINISH, submit('SUPPORTS_TARGET','OPEN',['E1'],20,
