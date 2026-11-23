@@ -51,6 +51,14 @@ class StagedEvents(AutonomousEvents):
         elif action=='REQUEST_CLOSE' and bracket:
             journal.update(event_action='CLOSE',boundary=bracket)
         updated=super().apply(start,end,journal)
+        if journal['event_action']=='CLOSE' and revision.get('confirmation_evidence_id'):
+            # The current window's citations and the three temporal anchors have different roles.
+            anchors = dict(last_support=revision['before_id'], first_against=revision['after_id'],
+                           confirming_against=revision['confirmation_evidence_id'])
+            event = self.events[-1]
+            event['end_evidence_by_role'] = anchors
+            event['end_evidence_ids'] = list(dict.fromkeys([*anchors.values(), *event['end_evidence_ids']]))
+            updated['event_update']['end_evidence_by_role'] = anchors.copy()
         if action=='CONFIRM_EVENT':
             self.active.update(event_id=ident, detected_at_s=detected,
                                onset_status='bracketed' if bracket else 'unlocalized')

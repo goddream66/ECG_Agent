@@ -67,4 +67,10 @@ class EndFollowupTests(unittest.TestCase):
             self.assertEqual(event['end_decided_at_s'],None if recovers else 30)
             if not recovers:
                 self.assertEqual(event['estimated_end_s'],10)
-                self.assertIn('confirmation_evidence_id',trace[2]['llm_action']['refinement'])
+                refinement=trace[2]['llm_action']['refinement']
+                anchors=event['end_evidence_by_role']
+                self.assertEqual(anchors,dict(last_support=refinement['before_id'],
+                                             first_against=refinement['after_id'],
+                                             confirming_against=refinement['confirmation_evidence_id']))
+                self.assertEqual(len(set(anchors.values())),3)
+                self.assertTrue(set(anchors.values()).issubset(event['end_evidence_ids']))
