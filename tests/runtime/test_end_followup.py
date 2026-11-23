@@ -11,6 +11,15 @@ from tests.runtime.test_staged_review import act, boundary
 
 
 class EndFollowupTests(unittest.TestCase):
+    def test_indeterminate_measurement_never_offers_an_unexecutable_direction(self):
+        from cardioagent.ecg_agent.harness.window_semantics import available_findings
+        profile=json.loads((fixture.ROOT/'configs/ecg/react_qwen_followup_close.json').read_text())['window_band_profile']
+        row=dict(id='E1',tool='score_ecgfounder',lead='ECG2',window_s=[10,20],direction_allowed=True,
+                 status='ok',fields=dict(af_score=.667,afl_score=.61))
+        self.assertEqual(available_findings({'E1':row},[10,20],profile),['CANNOT_TELL'])
+        row['fields']['af_score']=.99
+        self.assertIn('TARGET_PRESENT',available_findings({'E1':row},[10,20],profile))
+        self.assertEqual(available_findings({'E1':row},[20,30],profile),['CANNOT_TELL'])
     def test_disagreeing_measured_leads_cannot_be_hidden_by_selective_citation(self):
         cfg=json.loads((fixture.ROOT/'configs/ecg/react_qwen_followup_leads.json').read_text())
         rows=[dict(id=k,tool='score_ecgfounder',lead=lead,window_s=[10,20],direction_allowed=True,

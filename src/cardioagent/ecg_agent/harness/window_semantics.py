@@ -149,3 +149,16 @@ def verify_band(observation, rows, window, profile):
              if k in rows and current_founder(rows[k], window)]
     if not flags or any(flag != direction for flag in flags):
         raise ValueError('Each current Founder measurement cited as directional must match the finding. Use uncertainty if needed.')
+
+
+def available_findings(rows, window, profile):
+    current=[r for r in rows.values() if current_founder(r,window)]
+    flags={band(r,profile)['direction'] for r in current}
+    allowed=['CANNOT_TELL']
+    if {'support','negative'}<=flags:
+        allowed.append('CONFLICTING_MEASUREMENTS')
+    elif 'support' in flags:
+        allowed.append('TARGET_PRESENT')
+    elif 'negative' in flags:
+        allowed.append('TARGET_ABSENT')
+    return allowed
