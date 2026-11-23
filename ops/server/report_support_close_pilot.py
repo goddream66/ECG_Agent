@@ -33,6 +33,9 @@ def evaluate(c, folder):
         if d=='AGAINST_TARGET':result[kind+'_against']+=1
         if w['action'] in ('LIFECYCLE_ERROR','ACTION_ERROR'):
             errors.append([b,w['action']])
+        refinement=(w.get('llm_action') or {}).get('refinement') or {}
+        if refinement.get('status')=='error':
+            result['boundary_stage_errors']+=1
         if w['action']=='REQUEST_CLOSE':result['end_requests']+=1
         decisions.append([b,d,w['action'],w['state']])
         leads={e['lead'] for e in evidence if e['tool']=='score_ecgfounder' and e['status']=='ok'
@@ -146,7 +149,10 @@ def main():
         for arm,c,run in joint:
             for t,d,a,state in run['decisions']:
                 report.append(f"|{arm}|{c['record_id']}|{t:g}|{d}|{a}|{state}|")
-    report+=['','代码提交：K 5546379、L af50bf4、M cb3dd93、显示分箱方向 5d4d2e7、修订分数含义 7977f0a、最终配置 69b2206。历史 J 使用范围提示。独立开发回归测试 270 项通过。']
+        for arm in ('P','R'):
+            runs=[r for tag,_,r in joint if tag==arm]
+            report.append(f"\n{arm} 已完成 {len(runs)} 段，共 {sum(len(r['decisions']) for r in runs)} 窗。最终动作错误 {sum(r['counts']['errors'] for r in runs)} 次；边界阶段用完重试 {sum(r['counts'].get('boundary_stage_errors',0) for r in runs)} 次。后者可发生在已入账的候选上，单独计数。")
+    report+=['','代码提交：K 5546379、L af50bf4、M cb3dd93、显示分箱方向 5d4d2e7、修订分数含义 7977f0a、组合 P 69b2206、冲突修复 R 9cc1c1d。历史 J 使用范围提示。最终完整回归测试 271 项通过。']
     (root/'实验报告.md').write_text('\n'.join(report)+'\n',encoding='utf8')
     print(json.dumps(totals))
 if __name__=='__main__':main()
