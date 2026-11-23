@@ -8,13 +8,15 @@ import time
 import run_04936_attribution_pair as base
 
 
-def main(*, split_event=False, measured_event=False, replicate=1):
-    split_event = split_event or measured_event
+def main(*, split_event=False, measured_event=False, staged_event=False, replicate=1):
+    split_event = split_event or measured_event or staged_event
     old_root = base.OUTPUT
     checkout = Path(__file__).resolve().parents[2]
     experiment = '04936-event-v15' if split_event else '04936-grounding-v14'
     if measured_event:
         experiment = '04936-event-v16'
+    if staged_event:
+        experiment = '04936-event-v17'
     root = base.STORAGE/'runs'/f'{experiment}-1550-1850-r{replicate}'
     root.mkdir(exist_ok=True,parents=True)
     if (root/'status.json').exists():
@@ -75,7 +77,7 @@ def main(*, split_event=False, measured_event=False, replicate=1):
             live.append(launch(len(live),name,['-m','cardioagent.ecg_agent.experiments.runner',
                       '--mode','live','--policies','event-react','--workers','1','--threads','2','--device','cuda:0',
                       '--tasks',root/'task.jsonl','--channels',lead,'--llm-config',
-                      checkout/'configs/ecg'/('react_qwen_episode_'+mode+('_v16' if measured_event else '_v15' if split_event else '')+'.json'),'--output',root/name],checkout))
+                      checkout/'configs/ecg'/('react_qwen_episode_'+mode+('_v17' if staged_event else '_v16' if measured_event else '_v15' if split_event else '')+'.json'),'--output',root/name],checkout))
     jobs=finish(live,'live')
     base.summarize(jobs,task,original['task_id'])
     base.save('status.json',dict(stage='complete',jobs=jobs))
@@ -87,5 +89,6 @@ if __name__=='__main__':
     parser.add_argument('--split-event',action='store_true')
     parser.add_argument('--measured-event',action='store_true')
     parser.add_argument('--replicate',type=int,choices=(1,2),default=1)
+    parser.add_argument('--staged-event',action='store_true')
     args = parser.parse_args()
-    main(split_event=args.split_event, measured_event=args.measured_event, replicate=args.replicate)
+    main(split_event=args.split_event, measured_event=args.measured_event, replicate=args.replicate, staged_event=args.staged_event)

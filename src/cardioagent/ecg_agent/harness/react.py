@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from cardioagent.ecg_agent.policies.rule_review import decide_event
 from .event_decision import WindowEventDecision, overlaps_current, validate_grounding
-from . import autonomous_decision, split_event, measured_event
+from . import autonomous_decision, split_event, measured_event, staged_review
 
 PROMPT = Path(__file__).resolve().parents[1] / 'prompts/react_review_v1.txt'
 WINDOW_PROMPT = PROMPT.with_name('react_window_decision_v2.txt')
@@ -172,7 +172,7 @@ class ReActReview:
                  rule_safety_fallback=False, memory_write=False, memory_retrieve=False,
                  llm_window_interpretation=False, llm_tool_max_calls=None,
                  investigation_checkpoint=False, fact_history=False, event_review_mode=None,
-                 compact_final_evidence=True, split_event_review=False, measured_event_review=False):
+                 compact_final_evidence=True, split_event_review=False, measured_event_review=False, staged_event_review=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -194,8 +194,9 @@ class ReActReview:
         if event_review_mode and (not llm_window_interpretation or rule_safety_fallback or investigation_checkpoint):
             raise ValueError('Autonomous events require separate LLM interpretation without rule fallback or focus checkpoint')
         self.event_review_mode = event_review_mode
-        self.measured_event_review = measured_event_review
-        self.split_event_review = split_event_review or measured_event_review
+        self.staged_event_review = staged_event_review
+        self.measured_event_review = measured_event_review or staged_event_review
+        self.split_event_review = split_event_review or self.measured_event_review
         self.compact_final_evidence = compact_final_evidence
         self.investigation_checkpoint = investigation_checkpoint
         self.fact_history = fact_history
@@ -389,6 +390,8 @@ class ReActReview:
                 for tool in tools:
                     fn = tool['function']
                     fn['description'] += ' ' + split_event.TOOL_GUIDE[fn['name']]
+            if self.staged_event_review:
+                messages[0]['content'] = staged_review.SYSTEM + '\n' + autonomous_decision._fragments()['acquire']['en'] + '\nAfter acquisition you will submit the window assessment, choose a lifecycle action and optionally investigate a boundary. An observed onset is optional.'
             tools += [contract.final_tool(state),
                       {'type':'function','function':{'name':'finish_measurements',
                        'description':'Finish this round of measurement and submit the observation and event action.',
@@ -442,6 +445,18 @@ class ReActReview:
                     historical = dict.fromkeys(history_keys + sorted(retrieved_ids))
                     current_ids = set(aliases.values())
                     aliases.update({f'H{i}': key for i, key in enumerate(historical, 1) if key not in current_ids})
+                    if self.staged_event_review:
+                        state['recent_window_votes'] = {}
+                        for prior in self.history:
+                            observed = (prior.get('llm_action') or {}).get('window_assessment', {})
+                            if observed.get('interpretation') in ('support', 'negative'):
+                                for key in observed['directional_ids']:
+                                    state['recent_window_votes'][key] = observed['interpretation']
+                        self.last_action = staged_review.submit(self, state, aliases, ledger, session, emit,
+                            dict(identity, cursor_s=end, step=step), call_window, tools)
+                        failed = self.last_action['action']=='ACTION_ERROR'
+                        stop = 'ACTION_ERROR' if failed else 'staged_review_complete'
+                        break
                     messages = measured_event.final_context(dict(state, remaining_tool_calls=session.max_calls-len(session.calls)), aliases, ledger)
                     tools = [contract.final_tool(state, aliases) if t['function']['name']=='submit_event_decision'
                              else t for t in tools]

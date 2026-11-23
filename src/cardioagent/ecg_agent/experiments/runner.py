@@ -97,6 +97,7 @@ def run_job(job):
                     event_review_mode=job['llm'].get('event_review_mode'),
                     split_event_review=job['llm'].get('split_event_review',False),
                     measured_event_review=job['llm'].get('measured_event_review',False),
+                    staged_event_review=job['llm'].get('staged_event_review',False),
                     compact_final_evidence=job['llm'].get('compact_final_evidence', True),
                     memory_write=job['llm'].get('memory_write', False),
                     memory_retrieve=job['llm'].get('memory_retrieve', False),
@@ -255,6 +256,9 @@ def run(args):
         if llm_config.get('split_event_review'):
             from cardioagent.ecg_agent.harness import split_event
             provenance['llm']['split_event_and_tool_guide_sha256'] = digest(Path(split_event.__file__))
+        if llm_config.get('staged_event_review'):
+            from cardioagent.ecg_agent.harness import staged_review
+            provenance['llm']['staged_review_sha256'] = digest(Path(staged_review.__file__))
         if llm_config.get('measured_event_review'):
             from cardioagent.ecg_agent.harness import measured_event
             provenance['llm']['measured_event_sha256'] = digest(Path(measured_event.__file__))

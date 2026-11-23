@@ -9,6 +9,7 @@ import numpy as np
 import wfdb
 from cardioagent.common.recording import Waveform
 from cardioagent.ecg_agent.memory.evidence import EvidenceLedger
+from cardioagent.ecg_agent.memory.staged_events import StagedEvents
 from cardioagent.ecg_agent.memory.events import EventTracker
 from cardioagent.ecg_agent.memory.autonomous_events import AutonomousEvents, merge_spans
 from cardioagent.ecg_agent.policies.event_rules import EventConfig
@@ -26,7 +27,8 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
     event_control = react and getattr(reviewer, 'event_control', False)
     review_mode = getattr(reviewer, 'event_review_mode', None) if react else None
     if review_mode:
-        tracker = AutonomousEvents(review_mode, float(task['start_s']))
+        tracker_type = StagedEvents if getattr(reviewer,'staged_event_review',False) else AutonomousEvents
+        tracker = tracker_type(review_mode, float(task['start_s']))
     else:
         tracker = EventTracker(config, llm_closure=event_control,
                                rule_safety_fallback=event_control and getattr(reviewer, 'rule_safety_fallback', False))
@@ -274,6 +276,8 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
                      supported_seconds=sum(b-a for a,b in supported),
                      conflict_intervals=merge_spans(tracker.conflicts),
                      unknown_intervals=unknown, pending_questions=deepcopy(tracker.questions))
+    if isinstance(tracker, StagedEvents):
+        extra.update(candidates=deepcopy(tracker.candidates),event_control="qwen_staged")
     if policy == 'event-react':
         totals.update(reviewer.counts)
     return {'task_id': task['task_id'], 'record_id': record['record_id'], 'intervals': intervals,
