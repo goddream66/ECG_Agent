@@ -51,8 +51,8 @@ def resolve_ids(data, ledger):
     return result
 
 
-def main(source, output, config, mode):
-    out = output/mode
+def main(source, output, config, mode, swap_subtypes=False):
+    out = output/(mode + ('_swap' if swap_subtypes else ''))
     out.mkdir(parents=True, exist_ok=False)
     cfg = json.loads(config.read_text())
     model = RecordingChatModel(build_chat_model(cfg), out/'qwen_calls.jsonl.gz')
@@ -65,17 +65,24 @@ def main(source, output, config, mode):
             evidence = [json.loads(s) for s in (folder/'evidence.jsonl').read_text().splitlines()]
             frozen = frozen_inputs(folder, cursors)
             for cursor in cursors:
+                if swap_subtypes and (name != 'new-fixed-ecg2' or cursor not in (1560,1660,1670,1810)):
+                    continue
                 call = frozen[cursor]
                 data = json.loads(call['messages'][1]['content'])
                 rows = {r['id']:r for r in data['measurements']}
                 aliases = resolve_ids(data, evidence)
+                if swap_subtypes:
+                    for row in rows.values():
+                        fields=row['fields']
+                        if row['tool']=='score_ecgfounder' and 'af_score' in fields and 'afl_score' in fields:
+                            fields['af_score'],fields['afl_score']=fields['afl_score'],fields['af_score']
                 counts = Counter()
                 audit = dict(source=name, cursor_s=cursor)
                 obs = staged.assess(model, counts, emit, audit, data, aliases,
                                     lambda k: current_founder(rows[k], data['window_s']),
                                     lambda k: k in aliases, mode, cfg.get('window_band_profile'))
                 intent = None
-                if cursor in LIFECYCLE_CHECKS and obs['status'] == 'accepted':
+                if not swap_subtypes and cursor in LIFECYCLE_CHECKS and obs['status'] == 'accepted':
                     intent = staged.choose_action(model, counts, emit, audit, data['window_s'],
                                                   obs, data['open_event'], data['candidate'])
                 digest = hashlib.sha256(json.dumps(data['measurements'],sort_keys=True).encode()).hexdigest()
@@ -90,4 +97,5 @@ if __name__ == '__main__':
     for arg in ('source','output','config'):
         parser.add_argument('--'+arg, type=Path, required=True)
     parser.add_argument('--mode', choices=MODES, required=True)
+    parser.add_argument('--swap-subtypes',action='store_true')
     main(**vars(parser.parse_args()))

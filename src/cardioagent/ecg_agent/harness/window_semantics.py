@@ -15,7 +15,25 @@ DIRECTIONS = {
     'conflict': 'MIXED',
     'unavailable': 'UNDETERMINED',
 }
-MODES = ('legacy', 'masked', 'explicit', 'explicit_masked', 'single', 'verified')
+UNION_MODES = ('union_raw', 'union_max')
+UNION_LABELS = {'TARGET_PRESENT': 'support', 'TARGET_ABSENT': 'negative',
+                'CANNOT_TELL': 'unavailable', 'CONFLICTING_MEASUREMENTS': 'conflict'}
+UNION_TASK = (
+    'Answer ONE binary target question about the current interval: which is better supported, '
+    'TARGET PRESENT (atrial fibrillation OR atrial flutter), or TARGET ABSENT (neither)? '
+    'AF and AFL are interchangeable members of one target class. Never choose between their names. '
+    'A change from one target subtype to the other stays target-present. '
+    'Choose TARGET_PRESENT if current reliable measurements favor the target class; choose TARGET_ABSENT '
+    'if they favor neither target subtype. TARGET_ABSENT does not require proving normal sinus rhythm or '
+    'naming an alternative diagnosis. You are reporting the direction of the evidence, not diagnostic certainty. '
+    'When both absolute scores are weak, a small difference between them gives no evidence of target presence. '
+    'The union score is the larger absolute score; it is uncalibrated. There is no mandatory cutoff. '
+    'Use CANNOT_TELL when missing, ambiguous or unreliable evidence prevents even a directional preference. '
+    'Use CONFLICTING_MEASUREMENTS for opposing current rhythm measurements. Beat and RR proxies provide '
+    'quality or rhythm context only. Use the current interval for your vote; historical measurements '
+    'can show a change. Cite the IDs and explain your target versus non-target choice in one sentence.'
+)
+MODES = ('legacy', 'masked', 'explicit', 'explicit_masked', 'single', 'verified') + UNION_MODES
 INSTRUCTION = (
     'What do the measurements for THIS interval say about the presence of AF or AFL? '
     'Read both absolute Founder scores. One being larger than the other does not establish target presence. '
@@ -31,10 +49,10 @@ INSTRUCTION = (
 def window_request(data, tool, instruction, mode, profile=None):
     if mode not in MODES:
         raise ValueError(f'Unknown window assessment mode {mode}')
-    if mode in ('masked', 'explicit_masked', 'single', 'verified'):
+    if mode in ('masked', 'explicit_masked', 'single', 'verified') + UNION_MODES:
         # Positive allowlist excludes notes, pending questions, event IDs, prior votes and actions.
         data = {key: data[key] for key in ('window_s', 'cursor_s', 'primary_lead', 'measurements')}
-    if mode in ('explicit', 'explicit_masked', 'single', 'verified'):
+    if mode in ('explicit', 'explicit_masked', 'single', 'verified') + UNION_MODES:
         tool = deepcopy(tool)
         schema = tool['function']['parameters']
         schema['properties'] = {
@@ -43,10 +61,28 @@ def window_request(data, tool, instruction, mode, profile=None):
             'measurement_direction': {'type': 'string', 'enum': list(DIRECTIONS.values())},
             'finding': {'type': 'string', 'enum': list(LABELS)},
         }
-        if mode in ('single', 'verified'):
+        if mode in ('single', 'verified') + UNION_MODES:
             del schema['properties']['measurement_direction']
         schema['required'] = list(schema['properties'])
         instruction = INSTRUCTION
+    if mode in UNION_MODES:
+        data = deepcopy(data)
+        rhythm, context = [], []
+        for row in data.pop('measurements'):
+            if row['tool'] != 'score_ecgfounder':
+                context.append(row)
+                continue
+            fields = row['fields']
+            scores = [fields.get(k) for k in ('af_score', 'afl_score')]
+            valid = row['status']=='ok' and all(type(v) in (float,int) and isfinite(v) for v in scores)
+            row['fields'] = {'target_score': max(scores) if valid else None}
+            if mode == 'union_raw':
+                row['fields'].update(af_score=scores[0], afl_score=scores[1])
+            rhythm.append(row)
+        data['rhythm_measurements_by_time'] = sorted(rhythm, key=lambda r:(r['window_s'],r['lead'],r['id']))
+        data['other_measurements'] = context
+        tool['function']['parameters']['properties']['finding']['enum'] = list(UNION_LABELS)
+        instruction = UNION_TASK
     if mode == 'verified':
         if not profile:
             raise ValueError('Verified mode needs a frozen AFDB empirical reference')
@@ -63,6 +99,8 @@ def window_request(data, tool, instruction, mode, profile=None):
 def canonical_arguments(args, mode):
     if mode in ('legacy', 'masked'):
         return args
+    if mode in UNION_MODES:
+        return dict(interpretation=UNION_LABELS[args['finding']], evidence_ids=args['evidence_ids'], reason=args['reason'])
     label = LABELS.get(args['finding'])
     if label is None or (mode not in ('single','verified') and DIRECTIONS[label] != args['measurement_direction']):
         raise ValueError('Measurement direction and finding disagree. Re-read the current measurements.')

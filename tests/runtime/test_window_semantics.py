@@ -36,3 +36,19 @@ class WindowSemanticsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify_band(args,rows,[10,20],profile)
         verify_band(dict(interpretation='unavailable',evidence_ids=[]),rows,[10,20],profile)
+
+    def test_union_input_invariant_to_subtype_names_and_sorted_by_time(self):
+        from copy import deepcopy
+        tool={'function':{'parameters':{'properties':{'evidence_ids':{},'reason':{}}}}}
+        def row(start,af,afl):
+            return dict(id=str(start),lead='ECG1',window_s=[start,start+10],status='ok',
+                        tool='score_ecgfounder',fields={'af_score':af,'afl_score':afl})
+        data=dict(window_s=[10,20],cursor_s=20,primary_lead='ECG1',measurements=[row(10,.1,.95),row(0,.05,.08)])
+        flip=deepcopy(data)
+        for r in flip['measurements']:
+            f=r['fields']
+            f['af_score'],f['afl_score']=f['afl_score'],f['af_score']
+        a=window_request(data,tool,'','union_max')
+        self.assertEqual(a,window_request(flip,tool,'','union_max'))
+        self.assertEqual([r['fields']['target_score'] for r in a[0]['rhythm_measurements_by_time']],[.08,.95])
+        self.assertNotEqual(window_request(data,tool,'','union_raw'),window_request(flip,tool,'','union_raw'))
