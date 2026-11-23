@@ -18,7 +18,7 @@ class EndFollowupTests(unittest.TestCase):
         data = dict(vote_on_this_interval=[],earlier_measurements_for_comparison_only=[row])
         view, prompt = direction_only_view(data, REFERENCE_DESCRIPTION)
         actual, = view['earlier_measurements_for_comparison_only']
-        self.assertEqual(actual,dict(row,empirical_reference=dict(direction='support')))
+        self.assertEqual(actual,dict(row,empirical_reference=dict(evidence_for_this_window='FAVORS_AF_OR_AFL')))
         self.assertIn('target_fraction',row['empirical_reference'])
         self.assertIn('same lead',prompt)
     def test_indeterminate_measurement_never_offers_an_unexecutable_direction(self):

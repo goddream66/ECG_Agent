@@ -52,6 +52,10 @@ def evaluate(c, folder):
                 result['correct_close_on_previously_confirmed_event']+=1
             else:
                 result['first_confirmed_at_or_after_reference_end']+=1
+        elif not c['reference']:
+            result['closure_of_false_alarm_on_background']+=1
+        elif any(a<=b<end for a,end in c['reference']):
+            result['premature_close_during_target']+=1
         closed.append(dict(decided_at=b,estimated=e['estimated_end_s'],true_end=u,delay=b-u if u else None,
                            event_confirmed_at_s=e['confirmed_at_s'],
                            bracket=e.get('end_boundary')))
@@ -107,6 +111,20 @@ def main():
              '- 08378 的 2860 秒片段开始时参考房扑已经持续，2897.34 秒结束。如果模型仅在 2900 秒才首次确认，即使估计边界碰到参考终点，也应单列为终点到达后的发现。先前窗口的参考标签只在事后核对。',
              '- 在 07162 的 4320–4330 秒，L 只请求了 ECG2，K 只请求了 ECG1。选择另一导联与实测两导联后解决冲突是两种不同结果。各窗的实测通道见 metrics.json 中的 measured_leads。',
              '- 针对“持续事件中单窗下降”选取的困难反例会放大两窗复核的预期优势。短片段结果不能估计整条记录上的错误关闭率。']
+    fixed=root/'reference-view'/'results.jsonl'
+    if fixed.exists():
+        answers=lines(fixed)
+        pairs={}
+        for row in answers:
+            pairs.setdefault((row['clip'],row['cursor_s']),{})[row['arm']]=row
+        report+=['','## 固定测量下的分数呈现实验','',
+                 '同卡交替回放每个判断点的首次观察调用。两次使用相同的测量、时刻、允许动作和解码设置。原界面同时显示模型分数、经验方向和其他记录的分箱目标比例；新界面保留分数及方向，并提醒同导联按时间比分数。本轮只检查窗口观察，没有执行事件动作。','',
+                 '|游标|原观察|新观察|原输入重跑与历史回答逐字一致|','|---:|---|---|---|']
+        for (_, t), arms in pairs.items():
+            if set(arms)=={'original','direction'}:
+                l,r=arms['original'],arms['direction']
+                report.append(f"|{t}|{l.get('finding','无有效回答')}|{r.get('finding','无有效回答')}|{l.get('raw_reproduced',False)}|")
+        report+=['','完整原话与两组输入见 reference-view/results.jsonl 和同目录的 Qwen 日志。字段合法率、测量方向解释和节律判断正确性应分别评价。']
     (root/'实验报告.md').write_text('\n'.join(report)+'\n',encoding='utf8')
     print(json.dumps(totals))
 if __name__=='__main__':main()

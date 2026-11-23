@@ -47,10 +47,16 @@ def direction_only_view(data, instruction):
         for row in data[group]:
             ref = row.get('empirical_reference')
             if ref is not None:
-                row['empirical_reference'] = {'direction': ref['direction']}
+                meaning = {'support':'FAVORS_AF_OR_AFL', 'negative':'WEIGHS_AGAINST_AF_AND_AFL',
+                           'indeterminate':'NO_CLEAR_DIRECTION'}
+                row['empirical_reference'] = {'evidence_for_this_window': meaning[ref['direction']]}
     instruction = instruction.replace(REFERENCE_DESCRIPTION,
-        ' Each target_score is a measurement. Its reference direction summarizes similar scores in other records.'
+        ' Each target_score is a nonnegative number between 0 and 1. Quote its measured value when citing it.'
+        ' evidence_for_this_window describes how that measurement bears on AF or AFL.'
+        ' NO_CLEAR_DIRECTION means this measurement favors neither conclusion.'
         ' To describe a change, compare measured target_scores on the same lead in time order.')
+    instruction = instruction.replace(' Negative weighs toward TARGET_ABSENT; support weighs toward TARGET_PRESENT.',
+                                      ' WEIGHS_AGAINST_AF_AND_AFL permits TARGET_ABSENT; FAVORS_AF_OR_AFL permits TARGET_PRESENT.')
     instruction = instruction.replace('There is no mandatory cutoff.',
                                       'The available findings describe this window; a score alone cannot confirm an episode.')
     return data, instruction
