@@ -83,7 +83,7 @@ def main():
     report[2:2]=['J 为单次分数转低即可提交终点范围的对照。L 在 K 上提示按需复核第二导联。M 单独在 K 上只向模型提供当前证据允许提交的观察类别，同时保留不确定。各组均使用固定十秒唤醒。','']
     totals={}
     for c in cases:
-        for arm in ('J','K','L','M'):
+        for arm in ('J','K','L','M','P'):
             folder=root/(arm+'-'+c['key'])
             if arm=='J' and c['split']=='development':folder=old/('bracket-live-'+c['key'])
             if not all((folder/name).exists() for name in ('window_trace.jsonl','result.json','llm_steps.jsonl','evidence.jsonl')):continue
@@ -98,7 +98,7 @@ def main():
              '|范围|方法|相同片段数|纯目标支持|纯非目标误支持|真终点关闭|其中在真终点前已开启|误关|动作错误|Qwen 调用|',
              '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|']
     for split in ('development','holdout'):
-        for alternative in ('K','L','M'):
+        for alternative in ('K','L','M','P'):
             shared=[c['key'] for c in cases if c['split']==split and all(t+'-'+c['key'] in output for t in ('J',alternative))]
             if not shared:continue
             for t in ('J',alternative):
@@ -109,6 +109,7 @@ def main():
     report+=['','## 读逐窗结果时应区分什么','',
              '- 04936 的终点约在 1791.044 秒。关闭判定时刻用于评价延迟，账本回溯的估计终点用于评价定位。7930 秒在另一次持续事件内部，必须检查稍后回升是否仍沿用同一事件。两个片段各自从空账本启动。',
              '- 08378 的 2860 秒片段开始时参考房扑已经持续，2897.34 秒结束。如果模型仅在 2900 秒才首次确认，即使估计边界碰到参考终点，也应单列为终点到达后的发现。先前窗口的参考标签只在事后核对。',
+             '- 05091 的 3930–3940 秒完全在非目标区。K 只取得 ECG1 分数 0.830，确认了一个错误事件。L 同窗测得 ECG1 为 0.830、ECG2 为 0.253，记录冲突并保持空账本。这一例同时有两份实测，与另选单一导联不同。',
              '- 在 07162 的 4320–4330 秒，L 只请求了 ECG2，K 只请求了 ECG1。选择另一导联与实测两导联后解决冲突是两种不同结果。各窗的实测通道见 metrics.json 中的 measured_leads。',
              '- 针对“持续事件中单窗下降”选取的困难反例会放大两窗复核的预期优势。短片段结果不能估计整条记录上的错误关闭率。']
     fixed=root/'reference-view'/'results.jsonl'
@@ -125,6 +126,16 @@ def main():
                 l,r=arms['original'],arms['direction']
                 report.append(f"|{t}|{l.get('finding','无有效回答')}|{r.get('finding','无有效回答')}|{l.get('raw_reproduced',False)}|")
         report+=['','完整原话与两组输入见 reference-view/results.jsonl 和同目录的 Qwen 日志。字段合法率、测量方向解释和节律判断正确性应分别评价。']
+    comparison=root/'reference_comparison.json'
+    if comparison.exists():
+        scores=json.loads(comparison.read_text(encoding='utf8'))['summary']
+        report+=['','## 当前数值与方向词的第二次修订','',
+                 '|窗口观察界面|点数|结果与原版一致|理由引用当前分数|把分数表述为负数|',
+                 '|---|---:|---:|---:|---:|']
+        for mode,label in [('original','原始分箱显示'),('direction','只显示方向词'),('meaning','显示方向含义并要求引用数值')]:
+            v=scores[mode]
+            report.append(f"|{label}|{v['points']}|{v['same_as_original']}|{v['quotes_current_score']}|{v['calls_score_negative']}|")
+        report+=['','7940 秒的原回答将当前分数 0.8545 和历史分箱比例 0.0125 作比较。最终修订后改为与上一窗模型分数约 0.220 比较。7950 秒的 0.667 仍被判为不确定。可疑低分并未因此变成正确的节律识别。原始及修订后回答、核对口径和真实分数见 reference_comparison.json。']
     (root/'实验报告.md').write_text('\n'.join(report)+'\n',encoding='utf8')
     print(json.dumps(totals))
 if __name__=='__main__':main()
