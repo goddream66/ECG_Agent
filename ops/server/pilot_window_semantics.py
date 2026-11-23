@@ -73,7 +73,7 @@ def main(source, output, config, mode):
                 audit = dict(source=name, cursor_s=cursor)
                 obs = staged.assess(model, counts, emit, audit, data, aliases,
                                     lambda k: current_founder(rows[k], data['window_s']),
-                                    lambda k: k in aliases, mode)
+                                    lambda k: k in aliases, mode, cfg.get('window_band_profile'))
                 intent = None
                 if cursor in LIFECYCLE_CHECKS and obs['status'] == 'accepted':
                     intent = staged.choose_action(model, counts, emit, audit, data['window_s'],

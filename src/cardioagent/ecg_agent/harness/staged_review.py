@@ -73,7 +73,7 @@ def ask(model, counts, emit, audit, data, tool, instruction, validate, extras=()
     return dict(status='error',reason=error)
 
 
-def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode):
+def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode, profile=None):
     rows = {r['id']:r for r in data['measurements']}
     a,b = data['window_s']
     def interpret(args):
@@ -99,9 +99,13 @@ def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode)
                 ['interpretation','evidence_ids','reason'])
     instruction=('Judge the current interval only. Cite the measurements you used. The runtime identifies auxiliary tools as context. '
             'support favors either subtype, negative weighs against both, conflict means opposed current measurements, unavailable includes insufficient evidence.')
-    observation_data, tool, instruction = window_semantics.window_request(data, tool, instruction, mode)
+    observation_data, tool, instruction = window_semantics.window_request(data, tool, instruction, mode, profile)
     def validate_observation(args):
-        return interpret(window_semantics.canonical_arguments(args, mode))
+        canonical = window_semantics.canonical_arguments(args, mode)
+        observation = interpret(canonical)
+        if mode == 'verified':
+            window_semantics.verify_band(canonical, rows, data['window_s'], profile)
+        return observation
     return ask(model,counts,emit,audit,observation_data,tool,instruction,validate_observation)
 
 
@@ -142,7 +146,7 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
                 and r['window_s'][1]<=b and ledger.get(aliases[key])['available_at_s']<=b)
     obs = assess(reviewer.model, reviewer.counts, emit, audit, data, aliases, usable,
                  lambda key: ledger.get(aliases[key])['available_at_s'] <= b,
-                 getattr(reviewer, 'window_assessment_mode', 'legacy'))
+                 getattr(reviewer, 'window_assessment_mode', 'legacy'), getattr(reviewer, 'window_band_profile', None))
     if obs['status']=='error':
         return dict(action='ACTION_ERROR',decision='ACTION_ERROR',evidence_ids=[],reason=obs['reason'],window_assessment=obs)
     emit('assessments',dict(audit,stage='window',window_s=[a,b],**obs))

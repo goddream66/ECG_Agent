@@ -99,6 +99,7 @@ def run_job(job):
                     measured_event_review=job['llm'].get('measured_event_review',False),
                     staged_event_review=job['llm'].get('staged_event_review',False),
                     window_assessment_mode=job['llm'].get('window_assessment_mode','legacy'),
+                    window_band_profile=job['llm'].get('window_band_profile'),
                     compact_final_evidence=job['llm'].get('compact_final_evidence', True),
                     memory_write=job['llm'].get('memory_write', False),
                     memory_retrieve=job['llm'].get('memory_retrieve', False),
@@ -253,6 +254,12 @@ def run(args):
         prompt_path = WINDOW_PROMPT if llm_config.get('llm_window_interpretation') else PROMPT
         if llm_config.get('event_review_mode'):
             prompt_path = PROMPT_PATH
+        if llm_config.get('window_assessment_mode') == 'verified':
+            profile = llm_config['window_band_profile']
+            if manifest['profile'] != profile['cache_profile'] or any(
+                provenance[k] != v for k,v in profile['model_sha256'].items()
+            ) or any(t['record_id'] in profile['fit_records'] for t in tasks.values()):
+                raise ValueError('Frozen window reference requires matching model/preprocessing and separate records')
         provenance['llm'] = dict(config=llm_config, prompt_sha256=digest(prompt_path))
         if llm_config.get('split_event_review'):
             from cardioagent.ecg_agent.harness import split_event

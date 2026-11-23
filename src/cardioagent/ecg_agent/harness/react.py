@@ -173,7 +173,7 @@ class ReActReview:
                  llm_window_interpretation=False, llm_tool_max_calls=None,
                  investigation_checkpoint=False, fact_history=False, event_review_mode=None,
                  compact_final_evidence=True, split_event_review=False, measured_event_review=False, staged_event_review=False,
-                 window_assessment_mode='legacy'):
+                 window_assessment_mode='legacy', window_band_profile=None):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -198,6 +198,7 @@ class ReActReview:
         from .window_semantics import MODES
         if window_assessment_mode not in MODES or (window_assessment_mode != 'legacy' and not staged_event_review):
             raise ValueError('Window assessment experiment requires a valid staged mode')
+        self.window_band_profile = window_band_profile
         self.window_assessment_mode = window_assessment_mode
         self.staged_event_review = staged_event_review
         self.measured_event_review = measured_event_review or staged_event_review
