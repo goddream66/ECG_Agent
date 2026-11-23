@@ -45,6 +45,14 @@ class MeasuredEventTests(unittest.TestCase):
         self.assertTrue(any('Only a usable Founder' in s.get('error_message','') for s in steps))
         self.assertFalse(any(s['status']=='evidence_recovery_requested' for s in steps))
 
+    def test_model_selects_id_instead_of_authoring_field_paths(self):
+        tool = contract.final_tool(dict(open_event=None,pending_question=None), {'E1':'hash'})
+        schema = tool['function']['parameters']
+        props = schema['$defs']['EvidenceAttribution']['properties']
+        self.assertEqual(set(props), {'evidence_id','role'})
+        self.assertEqual(props['evidence_id']['enum'], ['E1'])
+        self.assertIn('uncertainty_cause', schema['required'])
+
     def test_boundary_cannot_be_a_single_score_or_peak(self):
         direction = {contract.DIRECTIONS[0]:[dict(window_s=[1,11])],contract.DIRECTIONS[1]:[]}
         with self.assertRaises(contract.BoundaryEvidenceNeeded):

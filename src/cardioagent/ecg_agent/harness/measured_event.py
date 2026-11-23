@@ -28,7 +28,7 @@ def prompt(state, phase, *, retry=False):
         parts.append(legacy._fragments()['acquire']['en'])
         parts.append('Choose a check that could change your judgment. The beat timeline already contains RR and morphology proxies. For a suspected boundary, compare distinct arrived intervals.')
     else:
-        parts.append('Submit submit_event_decision once. Cite measurement IDs. The runtime binds both actual Founder scores together. Assign one role per measurement. NEUTRAL means a usable observation with no target direction, INDETERMINATE means you cannot interpret it, CONTEXT_ONLY gives background. Only successful Founder pairs can have directional roles. Describe the decisive values and times in reason. UNCERTAIN needs a cause. DEFER_DECISION needs a question and the evidence you would seek. OPEN may also carry a follow-up. RECORD_ONLY and CLOSE have no pending field. Scheduling is separate.')
+        parts.append('Submit submit_event_decision once. Under citations supply only evidence_id and role. Copy the displayed ID. Never write field paths. The runtime binds both actual Founder scores together. Assign one role per measurement. NEUTRAL means a usable observation with no target direction, INDETERMINATE means you cannot interpret it, CONTEXT_ONLY gives background. Only successful Founder pairs can have directional roles. Describe the decisive values and times in reason. For UNCERTAIN fill the top-level uncertainty_cause string: missing, unusable, conflicting or insufficient. For any other assessment use null. DEFER_DECISION needs a question and the evidence you would seek. OPEN may also carry a follow-up. RECORD_ONLY and CLOSE have no pending field. Scheduling is separate.')
         parts.append('Only OPEN and CLOSE use boundary. For bracketed, set range_s to [start of the earlier directional window, end of the later directional window]; the two windows must not overlap. OPEN goes from against to support; CLOSE from support to against. These aggregate windows cannot establish an exact second. If the end lacks anchors, defer with a concrete boundary question.')
     if state['stream_end']:
         parts.append('The recording has ended. An unobserved end remains right-censored.')
@@ -37,14 +37,15 @@ def prompt(state, phase, *, retry=False):
     return '\n\n'.join(parts)
 
 
-def final_tool(state):
+def final_tool(state, aliases=None):
     tool = split_event.final_tool(state)
     schema = tool['function']['parameters']
     props = schema['$defs']['EvidenceAttribution']['properties']
     props.pop('field')
     props['role']['enum'] = list(DIRECTIONS + OTHER_ROLES)
-    props['fields'] = {'type': 'array', 'items': {'type': 'string'},
-                       'description': 'Optional keys from the displayed measured fields. Founder always binds both subtype scores.'}
+    if aliases:
+        props['evidence_id']['enum'] = list(aliases)
+    schema['required'].append('uncertainty_cause')
     boundary = schema['properties']['boundary']
     boundary['anyOf'] = [option for option in boundary['anyOf'] if option.get('$ref') != '#/$defs/Point']
     schema['$defs'].pop('Point', None)

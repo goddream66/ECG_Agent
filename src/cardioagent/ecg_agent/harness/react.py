@@ -443,6 +443,8 @@ class ReActReview:
                     current_ids = set(aliases.values())
                     aliases.update({f'H{i}': key for i, key in enumerate(historical, 1) if key not in current_ids})
                     messages = measured_event.final_context(dict(state, remaining_tool_calls=session.max_calls-len(session.calls)), aliases, ledger)
+                    tools = [contract.final_tool(state, aliases) if t['function']['name']=='submit_event_decision'
+                             else t for t in tools]
                 elif self.event_review_mode:
                     messages[0]['content'] = contract.prompt(state, 'final')
                     entries = [{'id': alias, 'evidence_id': key} for alias, key in aliases.items()]

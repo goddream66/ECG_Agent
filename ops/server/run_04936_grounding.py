@@ -8,14 +8,14 @@ import time
 import run_04936_attribution_pair as base
 
 
-def main(*, split_event=False, measured_event=False):
+def main(*, split_event=False, measured_event=False, replicate=1):
     split_event = split_event or measured_event
     old_root = base.OUTPUT
     checkout = Path(__file__).resolve().parents[2]
     experiment = '04936-event-v15' if split_event else '04936-grounding-v14'
     if measured_event:
         experiment = '04936-event-v16'
-    root = base.STORAGE/'runs'/f'{experiment}-1550-1850-r1'
+    root = base.STORAGE/'runs'/f'{experiment}-1550-1850-r{replicate}'
     root.mkdir(exist_ok=True,parents=True)
     if (root/'status.json').exists():
         raise FileExistsError(root/'status.json')
@@ -86,5 +86,6 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--split-event',action='store_true')
     parser.add_argument('--measured-event',action='store_true')
+    parser.add_argument('--replicate',type=int,choices=(1,2),default=1)
     args = parser.parse_args()
-    main(split_event=args.split_event, measured_event=args.measured_event)
+    main(split_event=args.split_event, measured_event=args.measured_event, replicate=args.replicate)
