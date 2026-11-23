@@ -75,7 +75,7 @@ def ask(model, counts, emit, audit, data, tool, instruction, validate, extras=()
 
 
 def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode, profile=None, compare_leads=False,
-           bound_choices=False):
+           bound_choices=False, direction_only=False):
     rows = {r['id']:r for r in data['measurements']}
     a,b = data['window_s']
     def interpret(args):
@@ -102,6 +102,8 @@ def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode,
     instruction=('Judge the current interval only. Cite the measurements you used. The runtime identifies auxiliary tools as context. '
             'support favors either subtype, negative weighs against both, conflict means opposed current measurements, unavailable includes insufficient evidence.')
     observation_data, tool, instruction = window_semantics.window_request(data, tool, instruction, mode, profile)
+    if direction_only:
+        observation_data, instruction = window_semantics.direction_only_view(observation_data, instruction)
     if bound_choices:
         allowed=window_semantics.available_findings(rows,[a,b],profile)
         tool['function']['parameters']['properties']['finding']['enum']=allowed
@@ -200,7 +202,7 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
     obs = assess(reviewer.model, reviewer.counts, emit, audit, data, aliases, usable,
                  lambda key: ledger.get(aliases[key])['available_at_s'] <= b,
                  getattr(reviewer, 'window_assessment_mode', 'legacy'), getattr(reviewer, 'window_band_profile', None),
-                 reviewer.compare_rhythm_leads, reviewer.bound_window_choices)
+                 reviewer.compare_rhythm_leads, reviewer.bound_window_choices, reviewer.direction_only_reference)
     if obs['status']=='error':
         return dict(action='ACTION_ERROR',decision='ACTION_ERROR',evidence_ids=[],reason=obs['reason'],window_assessment=obs)
     emit('assessments',dict(audit,stage='window',window_s=[a,b],**obs))

@@ -34,6 +34,27 @@ UNION_TASK = (
     'can show a change. Cite the IDs and explain your target versus non-target choice in one sentence.'
 )
 MODES = ('legacy', 'masked', 'explicit', 'explicit_masked', 'single', 'verified') + UNION_MODES
+REFERENCE_DESCRIPTION = (' Each reference gives the fraction of target-positive windows among similar scores '
+                         'in other records, and the direction of that measurement.')
+
+
+def direction_only_view(data, instruction):
+    """Retain each measured score and empirical direction; never expose a cohort rate as a second score."""
+    if REFERENCE_DESCRIPTION not in instruction:
+        raise ValueError('Direction-only view requires the union reference prompt')
+    data = deepcopy(data)
+    for group in ('vote_on_this_interval', 'earlier_measurements_for_comparison_only'):
+        for row in data[group]:
+            ref = row.get('empirical_reference')
+            if ref is not None:
+                row['empirical_reference'] = {'direction': ref['direction']}
+    instruction = instruction.replace(REFERENCE_DESCRIPTION,
+        ' Each target_score is a measurement. Its reference direction summarizes similar scores in other records.'
+        ' To describe a change, compare measured target_scores on the same lead in time order.')
+    instruction = instruction.replace('There is no mandatory cutoff.',
+                                      'The available findings describe this window; a score alone cannot confirm an episode.')
+    return data, instruction
+
 INSTRUCTION = (
     'What do the measurements for THIS interval say about the presence of AF or AFL? '
     'Read both absolute Founder scores. One being larger than the other does not establish target presence. '
@@ -97,8 +118,7 @@ def window_request(data, tool, instruction, mode, profile=None):
         tool['function']['parameters']['properties']['finding']['enum'] = list(UNION_LABELS)
         instruction = UNION_TASK
         if mode == 'union_reference':
-            instruction += (' Each reference gives the fraction of target-positive windows among similar scores '
-                            'in other records, and the direction of that measurement. Negative weighs toward '
+            instruction += REFERENCE_DESCRIPTION + (' Negative weighs toward '
                             'TARGET_ABSENT; support weighs toward TARGET_PRESENT. Neither label claims certainty. '
                             'A nonzero score alone gives no positive evidence. Old positive readings do not '
                             'make a current negative reading positive. If you override or abstain, cite a '

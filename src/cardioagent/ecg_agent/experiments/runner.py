@@ -104,6 +104,7 @@ def run_job(job):
                     confirm_end_with_followup=job['llm'].get('confirm_end_with_followup',False),
                     compare_rhythm_leads=job['llm'].get('compare_rhythm_leads',False),
                     bound_window_choices=job['llm'].get('bound_window_choices',False),
+                    direction_only_reference=job['llm'].get('direction_only_reference',False),
                     compact_final_evidence=job['llm'].get('compact_final_evidence', True),
                     memory_write=job['llm'].get('memory_write', False),
                     memory_retrieve=job['llm'].get('memory_retrieve', False),

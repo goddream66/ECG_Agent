@@ -11,6 +11,16 @@ from tests.runtime.test_staged_review import act, boundary
 
 
 class EndFollowupTests(unittest.TestCase):
+    def test_direction_only_view_preserves_score_timing_direction_and_archive(self):
+        from cardioagent.ecg_agent.harness.window_semantics import direction_only_view, REFERENCE_DESCRIPTION
+        row = dict(id='H1', lead='ECG2', window_s=[10,20],fields={'target_score':.855},
+                   empirical_reference=dict(direction='support',target_fraction=.9829))
+        data = dict(vote_on_this_interval=[],earlier_measurements_for_comparison_only=[row])
+        view, prompt = direction_only_view(data, REFERENCE_DESCRIPTION)
+        actual, = view['earlier_measurements_for_comparison_only']
+        self.assertEqual(actual,dict(row,empirical_reference=dict(direction='support')))
+        self.assertIn('target_fraction',row['empirical_reference'])
+        self.assertIn('same lead',prompt)
     def test_indeterminate_measurement_never_offers_an_unexecutable_direction(self):
         from cardioagent.ecg_agent.harness.window_semantics import available_findings
         profile=json.loads((fixture.ROOT/'configs/ecg/react_qwen_followup_close.json').read_text())['window_band_profile']
