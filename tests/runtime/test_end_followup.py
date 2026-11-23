@@ -11,6 +11,17 @@ from tests.runtime.test_staged_review import act, boundary
 
 
 class EndFollowupTests(unittest.TestCase):
+    def test_paired_view_marks_only_opposite_cotimed_leads(self):
+        from cardioagent.ecg_agent.harness.window_semantics import paired_observation_view
+        def row(key,lead,span,meaning):
+            return dict(id=key,lead=lead,window_s=span,empirical_reference={'evidence_for_this_window':meaning})
+        rows=[row('E1','ECG1',[10,20],'FAVORS_AF_OR_AFL'),row('E2','ECG2',[10,20],'WEIGHS_AGAINST_AF_AND_AFL'),
+              row('H1','ECG2',[0,10],'WEIGHS_AGAINST_AF_AND_AFL')]
+        data=dict(window_s=[10,20],vote_on_this_interval=rows[:2],earlier_measurements_for_comparison_only=rows[2:])
+        view,_=paired_observation_view(data,'')
+        self.assertEqual(view['opposing_same_interval_measurement_ids'],[['E1','E2']])
+        self.assertNotIn('evidence_for_this_window',view['vote_on_this_interval'][0]['empirical_reference'])
+        self.assertIn('evidence_for_this_window',rows[0]['empirical_reference'])
     def test_direction_only_view_preserves_score_timing_direction_and_archive(self):
         from cardioagent.ecg_agent.harness.window_semantics import direction_only_view, REFERENCE_DESCRIPTION
         row = dict(id='H1', lead='ECG2', window_s=[10,20],fields={'target_score':.855},

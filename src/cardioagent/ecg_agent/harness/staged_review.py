@@ -118,6 +118,8 @@ def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode,
         instruction += (' Check all measured leads on the same time interval. If one has a positive and another '
                         'a negative empirical direction, report CONFLICTING_MEASUREMENTS or CANNOT_TELL. '
                         'Missing measurements and the two subtypes of the same lead do not create lead disagreement.')
+        if direction_only and bound_choices:
+            observation_data, instruction = window_semantics.paired_observation_view(observation_data, instruction)
     def validate_observation(args):
         if bound_choices and args.get('finding') not in allowed:
             raise ValueError(f'Choose one of the available findings: {allowed}')

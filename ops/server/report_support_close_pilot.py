@@ -81,9 +81,10 @@ def main():
         '开发片段沿用既有四例。新增片段在运行前单列，包含按参考标注选的真实终点、完整事件和按已存分数选的困难持续/非目标对照。选择依据和标签仅用于离线评估。每段从空账本启动，组间不共享模型决策或事件状态。','',
         '|范围|记录/起始秒|方法|纯目标窗 SUPPORT|纯非目标窗误 SUPPORT|正确关闭/真实终点|误关|实际关闭时刻|动作错误|','|---|---|---|---:|---:|---:|---:|---|---:|']
     report[2:2]=['J 为单次分数转低即可提交终点范围的对照。L 在 K 上提示按需复核第二导联。M 单独在 K 上只向模型提供当前证据允许提交的观察类别，同时保留不确定。各组均使用固定十秒唤醒。','']
+    report[4:4]=['最终短回放 P 使用 react_qwen_review_pilot.json。在一份配置中启用两时点结束复核、可选的同窗备用导联、受证据约束的窗口选项和修订后的参考字段。只回放 04936 的真实结束和持续反例，以及 05091 的非目标高分反例。三段各长 50 秒，均独立从空账本开始。P 用于确认组合后的实际行为；单个机制的比较应使用分项实验。','']
     totals={}
     for c in cases:
-        for arm in ('J','K','L','M','P'):
+        for arm in ('J','K','L','M','P','R'):
             folder=root/(arm+'-'+c['key'])
             if arm=='J' and c['split']=='development':folder=old/('bracket-live-'+c['key'])
             if not all((folder/name).exists() for name in ('window_trace.jsonl','result.json','llm_steps.jsonl','evidence.jsonl')):continue
@@ -98,7 +99,7 @@ def main():
              '|范围|方法|相同片段数|纯目标支持|纯非目标误支持|真终点关闭|其中在真终点前已开启|误关|动作错误|Qwen 调用|',
              '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|']
     for split in ('development','holdout'):
-        for alternative in ('K','L','M','P'):
+        for alternative in ('K','L','M','P','R'):
             shared=[c['key'] for c in cases if c['split']==split and all(t+'-'+c['key'] in output for t in ('J',alternative))]
             if not shared:continue
             for t in ('J',alternative):
@@ -136,6 +137,16 @@ def main():
             v=scores[mode]
             report.append(f"|{label}|{v['points']}|{v['same_as_original']}|{v['quotes_current_score']}|{v['calls_score_negative']}|")
         report+=['','7940 秒的原回答将当前分数 0.8545 和历史分箱比例 0.0125 作比较。最终修订后改为与上一窗模型分数约 0.220 比较。7950 秒的 0.667 仍被判为不确定。可疑低分并未因此变成正确的节律识别。原始及修订后回答、核对口径和真实分数见 reference_comparison.json。']
+    joint=[(arm,c,output[arm+'-'+c['key']]) for arm in ('P','R') for c in cases if arm+'-'+c['key'] in output]
+    if joint:
+        report+=['','## 最终组合逐窗回放','',
+                 'P 是第一次组合。R 在相同配置下将导联证据改为自然语言，列出实际在同一窗方向相反的两路测量 ID。两种版本仍允许模型选择不确定。','',
+                 '|版本|记录|游标秒|窗口证据结论|Qwen 动作|动作后正式事件状态|',
+                 '|---|---|---:|---|---|---|']
+        for arm,c,run in joint:
+            for t,d,a,state in run['decisions']:
+                report.append(f"|{arm}|{c['record_id']}|{t:g}|{d}|{a}|{state}|")
+    report+=['','代码提交：K 5546379、L af50bf4、M cb3dd93、显示分箱方向 5d4d2e7、修订分数含义 7977f0a、最终配置 69b2206。历史 J 使用范围提示。独立开发回归测试 270 项通过。']
     (root/'实验报告.md').write_text('\n'.join(report)+'\n',encoding='utf8')
     print(json.dumps(totals))
 if __name__=='__main__':main()

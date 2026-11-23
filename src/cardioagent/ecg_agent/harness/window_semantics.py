@@ -61,6 +61,35 @@ def direction_only_view(data, instruction):
                                       'The available findings describe this window; a score alone cannot confirm an episode.')
     return data, instruction
 
+
+def paired_observation_view(data, instruction):
+    """Describe co-timed lead disagreement separately from the model's output vocabulary."""
+    reading = {'FAVORS_AF_OR_AFL': 'This measurement favors the target.',
+               'WEIGHS_AGAINST_AF_AND_AFL': 'This measurement weighs against the target.',
+               'NO_CLEAR_DIRECTION': 'This measurement has no clear direction.'}
+    data = deepcopy(data)
+    current = {}
+    for group in ('vote_on_this_interval', 'earlier_measurements_for_comparison_only'):
+        for row in data[group]:
+            ref = row.get('empirical_reference')
+            if not ref:
+                continue
+            meaning = ref['evidence_for_this_window']
+            if group == 'vote_on_this_interval' and row['window_s'] == data['window_s']:
+                current[row['id']] = (row['lead'], meaning)
+            row['empirical_reference'] = {'measurement_description': reading[meaning]}
+    pairs = [[left, right] for left,(lead,d) in current.items() for right,(other,e) in current.items()
+             if lead != other and d == 'FAVORS_AF_OR_AFL' and e == 'WEIGHS_AGAINST_AF_AND_AFL']
+    if pairs:
+        data['opposing_same_interval_measurement_ids'] = pairs
+    instruction = instruction.replace('evidence_for_this_window', 'measurement_description')
+    instruction = instruction.replace(' NO_CLEAR_DIRECTION means this measurement favors neither conclusion.', '')
+    instruction = instruction.replace(' WEIGHS_AGAINST_AF_AND_AFL permits TARGET_ABSENT; FAVORS_AF_OR_AFL permits TARGET_PRESENT.', '')
+    instruction += (' Submit a finding from available_findings. A description of one measurement is never '
+                    'a finding to copy. Opposite same-time directions on different leads remain a disagreement '
+                    'even if one numeric score is larger. Cite both IDs when reporting that disagreement.')
+    return data, instruction
+
 INSTRUCTION = (
     'What do the measurements for THIS interval say about the presence of AF or AFL? '
     'Read both absolute Founder scores. One being larger than the other does not establish target presence. '
