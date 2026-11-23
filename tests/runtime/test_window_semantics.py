@@ -74,3 +74,13 @@ class WindowSemanticsTests(unittest.TestCase):
             self.assertEqual(trace[-1]['action'],'REQUEST_CLOSE')
             self.assertEqual(result['events'][0]['final_status']=='CLOSED',closes)
             self.assertEqual(bool(result['pending_questions']),not closes)
+
+        expanded_cfg=fixture.ROOT/'configs/ecg/react_qwen_end_range_pilot.json'
+        for config_file, expanded in [(cfg,False),(expanded_cfg,True)]:
+            actions=[fixture.measure(0),fixture.FINISH,observe('TARGET_PRESENT'),act('CONFIRM_EVENT',None),
+                     boundary('unlocalized'),fixture.measure(10),fixture.FINISH,observe('CANNOT_TELL'),
+                     act('REQUEST_CLOSE',1),boundary('unlocalized')]
+            *_, requests=fixture.EpisodeTests().replay('fixed',actions,2,config_file=config_file,
+                                                       score_pairs=[[.1,.95],[.12,.06]])
+            prompts=[r['messages'][0]['content'] for r in requests if r['tools'][0]['function']['name']=='refine_boundary']
+            self.assertEqual(['a TIME RANGE' in p for p in prompts],[False,expanded])

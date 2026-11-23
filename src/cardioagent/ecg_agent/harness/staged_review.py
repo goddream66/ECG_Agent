@@ -229,7 +229,7 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
             boundary_data.update(transition)
         instruction = ('Localize only if '+direction+'. You may measure one retained interval. '
                        'Use unlocalized if no pair supports the change. The ledger already saved the observation and lifecycle intent.')
-        if transition is not None and action=='REQUEST_CLOSE':
+        if reviewer.end_range_prompt and action=='REQUEST_CLOSE':
             instruction += (' Here located means a TIME RANGE between two observed sides of a plausible '
                             'end, even when its exact second is unknown. Before and after refer to the '
                             'combined rhythm target: present earlier, absent later. Consider temporary '

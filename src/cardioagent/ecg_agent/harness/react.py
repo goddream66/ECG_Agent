@@ -173,7 +173,7 @@ class ReActReview:
                  llm_window_interpretation=False, llm_tool_max_calls=None,
                  investigation_checkpoint=False, fact_history=False, event_review_mode=None,
                  compact_final_evidence=True, split_event_review=False, measured_event_review=False, staged_event_review=False,
-                 window_assessment_mode='legacy', window_band_profile=None):
+                 window_assessment_mode='legacy', window_band_profile=None, end_range_prompt=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -200,6 +200,9 @@ class ReActReview:
             raise ValueError('Window assessment experiment requires a valid staged mode')
         self.window_band_profile = window_band_profile
         self.window_assessment_mode = window_assessment_mode
+        if type(end_range_prompt) is not bool or (end_range_prompt and window_assessment_mode != 'union_reference'):
+            raise ValueError('The experimental end-range prompt requires union_reference mode')
+        self.end_range_prompt = end_range_prompt
         self.staged_event_review = staged_event_review
         self.measured_event_review = measured_event_review or staged_event_review
         self.split_event_review = split_event_review or self.measured_event_review
