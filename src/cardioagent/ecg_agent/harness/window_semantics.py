@@ -15,7 +15,7 @@ DIRECTIONS = {
     'conflict': 'MIXED',
     'unavailable': 'UNDETERMINED',
 }
-UNION_MODES = ('union_raw', 'union_max')
+UNION_MODES = ('union_raw', 'union_max', 'union_reference')
 UNION_LABELS = {'TARGET_PRESENT': 'support', 'TARGET_ABSENT': 'negative',
                 'CANNOT_TELL': 'unavailable', 'CONFLICTING_MEASUREMENTS': 'conflict'}
 UNION_TASK = (
@@ -79,10 +79,30 @@ def window_request(data, tool, instruction, mode, profile=None):
             if mode == 'union_raw':
                 row['fields'].update(af_score=scores[0], afl_score=scores[1])
             rhythm.append(row)
-        data['rhythm_measurements_by_time'] = sorted(rhythm, key=lambda r:(r['window_s'],r['lead'],r['id']))
+        timeline = sorted(rhythm, key=lambda r:(r['window_s'],r['lead'],r['id']))
+        data['rhythm_measurements_by_time'] = timeline
+        if mode == 'union_reference':
+            if not profile:
+                raise ValueError('Union reference needs an independently fitted profile')
+            data.pop('rhythm_measurements_by_time')
+            current, previous = [], []
+            for entry in timeline:
+                score = entry['fields']['target_score']
+                if score is not None:
+                    entry['empirical_reference'] = profile['bins'][entry['lead']][bisect_right(profile['edges'],score)]
+                (current if entry['window_s'][1]>data['window_s'][0] else previous).append(entry)
+            data['vote_on_this_interval'] = current
+            data['earlier_measurements_for_comparison_only'] = previous
         data['other_measurements'] = context
         tool['function']['parameters']['properties']['finding']['enum'] = list(UNION_LABELS)
         instruction = UNION_TASK
+        if mode == 'union_reference':
+            instruction += (' Each reference gives the fraction of target-positive windows among similar scores '
+                            'in other records, and the direction of that measurement. Negative weighs toward '
+                            'TARGET_ABSENT; support weighs toward TARGET_PRESENT. Neither label claims certainty. '
+                            'A nonzero score alone gives no positive evidence. Old positive readings do not '
+                            'make a current negative reading positive. If you override or abstain, cite a '
+                            'specific current conflict, reliability problem or ambiguous measurement.')
     if mode == 'verified':
         if not profile:
             raise ValueError('Verified mode needs a frozen AFDB empirical reference')

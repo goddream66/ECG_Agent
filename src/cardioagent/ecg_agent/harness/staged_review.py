@@ -103,13 +103,13 @@ def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode,
     def validate_observation(args):
         canonical = window_semantics.canonical_arguments(args, mode)
         observation = interpret(canonical)
-        if mode == 'verified':
+        if mode in ('verified','union_reference'):
             window_semantics.verify_band(canonical, rows, data['window_s'], profile)
         return observation
     return ask(model,counts,emit,audit,observation_data,tool,instruction,validate_observation)
 
 
-def choose_action(model, counts, emit, audit, window, obs, active, candidate):
+def choose_action(model, counts, emit, audit, window, obs, active, candidate, transition=None):
     a,b = window
     entity = active or candidate
     ident = entity['event_id'] if entity else None
@@ -125,15 +125,38 @@ def choose_action(model, counts, emit, audit, window, obs, active, candidate):
             raise ValueError(f'Select one of {actions} and use event_id={ident}')
         if action in ('CONFIRM_EVENT','CREATE_CANDIDATE') and obs['interpretation']!='support':
             raise ValueError('Registering an episode requires a supported observation')
-        if action=='REQUEST_CLOSE' and obs['interpretation']!='negative':
+        if action=='REQUEST_CLOSE' and obs['interpretation']!='negative' and not (transition and obs['assessment']=='UNCERTAIN'):
             raise ValueError('Request closure when current evidence weighs against both subtypes')
         return dict(status='accepted',**args)
     tool=schema('choose_event_action','Update the episode ledger independently of its boundary.',
                 dict(action=choice(actions),event_id={'enum':[ident]},reason=TEXT),['action','event_id','reason'])
-    return ask(model,counts,emit,audit,
-               dict(window_s=[a,b],assessment=obs,open_event=active,candidate=candidate,event_id=ident),
-               tool,'CREATE_CANDIDATE records a provisional finding. CONFIRM_EVENT registers an episode now, even on first detection. '
-               'You may hold or leave the ledger unchanged. CONFIRM_EVENT never requires a known onset. REQUEST_CLOSE starts an end investigation.',lifecycle)
+    data = dict(window_s=[a,b],assessment=obs,open_event=active,candidate=candidate,event_id=ident)
+    instruction = ('CREATE_CANDIDATE records a provisional finding. CONFIRM_EVENT registers an episode now, even on first detection. '
+                   'You may hold or leave the ledger unchanged. CONFIRM_EVENT never requires a known onset. REQUEST_CLOSE starts an end investigation.')
+    if transition is not None:
+        data.update(transition)
+        instruction += (' Compare the earlier and current evidence about the combined target. For an open event, '
+                        'choose REQUEST_CLOSE when a change from target-present to target-absent warrants '
+                        'checking its end, even if the exact boundary remains unknown. This requests an investigation. '
+                        'An accepted pair of before/after measurements is still required to close. '
+                        'CONTINUE_EVENT means evidence of ongoing target, HOLD_EVENT means unresolved. '
+                        'A prior open event itself provides no current rhythm evidence.')
+    return ask(model,counts,emit,audit,data,tool,instruction,lifecycle)
+
+
+def transition_context(data, profile):
+    if profile is None:
+        return None
+    rhythm=[]
+    for row in data['measurements']:
+        if not row.get('window_s') or not window_semantics.current_founder(row, [row['window_s'][0],data['cursor_s']]):
+            continue
+        rhythm.append(dict(id=row['id'], window_s=row['window_s'], lead=row['lead'],
+                           target_score=max(row['fields'][k] for k in measured_event.PAIR),
+                           reference=window_semantics.band(row,profile)))
+    return dict(rhythm_by_time=sorted(rhythm,key=lambda r:(r['window_s'],r['lead'],r['id'])),
+                pending_question=data.get('pending_question'))
+
 
 
 def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, tools):
@@ -152,7 +175,9 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
     emit('assessments',dict(audit,stage='window',window_s=[a,b],**obs))
     active=state['open_event']
     candidate=state['candidate']
-    intent = choose_action(reviewer.model, reviewer.counts, emit, audit, [a,b], obs, active, candidate)
+    profile = reviewer.window_band_profile if getattr(reviewer,'window_assessment_mode','legacy')=='union_reference' else None
+    transition = transition_context(data,profile)
+    intent = choose_action(reviewer.model, reviewer.counts, emit, audit, [a,b], obs, active, candidate, transition)
     emit('llm_steps',dict(audit,stage='lifecycle',status='lifecycle_result',intent=intent))
     action=intent.get('action')
     refinement=dict(status='not_requested')
@@ -177,7 +202,10 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
             previous = state.get('recent_window_votes',{})
             for key, direction in zip((left,right),expected):
                 known = previous.get(aliases[key])
-                if known and known != direction:
+                if profile is not None:
+                    if window_semantics.band(rows[key],profile)['direction'] != direction:
+                        raise ValueError(f'{key} does not provide the required measured direction')
+                elif known and known != direction:
                     raise ValueError(f'{key} has an opposite previously committed rhythm judgment')
             return dict(status='located',boundary=dict(kind='bracketed',range_s=[x,w]),
                         before_id=aliases[left],after_id=aliases[right],reason=args['reason'])
@@ -192,17 +220,28 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
                 raise ValueError('Outside retained arrived interval')
             row=call_window(name,parsed.model_dump())
             aliases['B1']=row['evidence_id']
-            rows['B1']=dict(window_s=row['window_s'],lead=row['lead'],fields=measured_event.numeric_fields(row),
+            rows['B1']=dict(id='B1',tool=name,status=row['status'],window_s=row['window_s'],lead=row['lead'],fields=measured_event.numeric_fields(row),
                             direction_allowed=name==measured_event.FOUNDER and row['status']=='ok')
             return dict(id='B1',**row)
         direction='before supports either subtype and after weighs against both' if action=='REQUEST_CLOSE' else 'before weighs against both and after supports either'
-        refinement=ask(reviewer.model,reviewer.counts,emit,audit,
-                       dict(window_s=[a,b],event_action=action,open_event=active,measurements=list(rows.values())),
+        boundary_data=dict(window_s=[a,b],event_action=action,open_event=active,measurements=list(rows.values()))
+        if transition is not None:
+            boundary_data.update(transition)
+        refinement=ask(reviewer.model,reviewer.counts,emit,audit,boundary_data,
                        tool,'Localize only if '+direction+'. You may measure one retained interval. '
                        'Use unlocalized if no pair supports the change. The ledger already saved the observation and lifecycle intent.',refine,extras,measure)
     payload=dict(**obs,window_assessment=obs,lifecycle=intent,refinement=refinement,
                  event_action=action or 'LIFECYCLE_ERROR',action=action or 'LIFECYCLE_ERROR',
                  boundary=refinement.get('boundary'),pending=None,decision_source='llm_staged')
+    if transition is not None:
+        prior = state.get('pending_question')
+        if action=='REQUEST_CLOSE' and refinement['status']!='located':
+            payload['pending'] = dict(question='Did the combined target end? Identify a measured before/after pair.',
+                                      needed_evidence='Earlier target support and later contrary evidence on arrived ECG')
+        elif prior and not (action=='REQUEST_CLOSE' or (action=='CONTINUE_EVENT' and obs['interpretation']=='support')):
+            payload['pending'] = {k:prior[k] for k in ('question','needed_evidence') if k in prior}
+        if prior:
+            payload['pending_resolution'] = 'still_pending' if payload['pending'] else ('resolved' if action=='REQUEST_CLOSE' else 'withdrawn')
     payload.update(split_event.appointment(reviewer.model,state,payload,reviewer.counts,emit,audit))
     return payload
 

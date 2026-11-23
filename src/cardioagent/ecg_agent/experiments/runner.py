@@ -254,7 +254,7 @@ def run(args):
         prompt_path = WINDOW_PROMPT if llm_config.get('llm_window_interpretation') else PROMPT
         if llm_config.get('event_review_mode'):
             prompt_path = PROMPT_PATH
-        if llm_config.get('window_assessment_mode') == 'verified':
+        if llm_config.get('window_assessment_mode') in ('verified','union_reference'):
             profile = llm_config['window_band_profile']
             if manifest['profile'] != profile['cache_profile'] or any(
                 provenance[k] != v for k,v in profile['model_sha256'].items()

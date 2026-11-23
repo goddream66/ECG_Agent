@@ -27,7 +27,7 @@ def main(root, source):
     conditions={}
     cases={}
     comparisons={}
-    for mode in MODES:
+    for mode in (*MODES, *(m for m in ('union_raw','union_max') if (root/m/'results.jsonl').exists())):
         results=rows(root/mode/'results.jsonl')
         signatures={(r['source'],r['cursor_s']):r['measurement_digest'] for r in results}
         if len(signatures)!=len(results) or (conditions and signatures!=comparisons):
@@ -69,7 +69,28 @@ def main(root, source):
         flag=profile['bins'][lead][bisect_right(profile['edges'],max(pair['af_score'],pair['afl_score']))]['direction']
         c.update(founder=pair, band_only=flag)
         baseline[c['group']][flag]+=1
-    result=dict(reference_intervals=reference,paired_rows=len(cases),score_only=dict(baseline),
+    swaps={}
+    for mode in ('union_raw','union_max'):
+        folder=root/(mode+'_swap')
+        if not folder.exists():
+            continue
+        originals={r['cursor_s']:r for r in rows(root/mode/'results.jsonl') if r['source']=='new-fixed-ecg2'}
+        swapped=rows(folder/'results.jsonl')
+        def first_assessments(path):
+            by_time={}
+            with gzip.open(path,'rt',encoding='utf8') as stream:
+                for line in stream:
+                    call=json.loads(line)
+                    if call['tools'][0]['function']['name']=='assess_window':
+                        by_time.setdefault(call['cursor_s'],call)
+            return by_time
+        before=first_assessments(root/mode/'qwen_calls.jsonl.gz')
+        after=first_assessments(folder/'qwen_calls.jsonl.gz')
+        swaps[mode]=[dict(cursor_s=r['cursor_s'],original=originals[r['cursor_s']]['observation'].get('interpretation','error'),
+                         swapped=r['observation'].get('interpretation','error'),
+                         input_identical=before[r['cursor_s']]['messages']==after[r['cursor_s']]['messages'],
+                         raw_response_identical=before[r['cursor_s']]['raw']==after[r['cursor_s']]['raw']) for r in swapped]
+    result=dict(subtype_swaps=swaps,reference_intervals=reference,paired_rows=len(cases),score_only=dict(baseline),
                 conditions=conditions,cases=cases)
     (root/'metrics.json').write_text(json.dumps(result,indent=2,ensure_ascii=False)+'\n',encoding='utf8')
     return result

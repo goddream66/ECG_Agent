@@ -36,13 +36,13 @@ def submit(assessment, action, ids, next_s, **kwargs):
 
 
 class EpisodeTests(unittest.TestCase):
-    def replay(self, mode, actions, n, *, future=None, interrupt_at=None, split=False):
+    def replay(self, mode, actions, n, *, future=None, interrupt_at=None, split=False, config_file=None, score_pairs=None):
         with TemporaryDirectory() as tmp:
             job = fixtures.EventCheckpointTests().make_job(Path(tmp))
             cfg = ROOT / f'configs/ecg/react_qwen_episode_{mode}.json'
             if split:
                 cfg = cfg.with_stem(cfg.stem + ('_'+split if isinstance(split,str) else '_v15'))
-            job.update(policy='event-react', llm=json.loads(cfg.read_text()))
+            job.update(policy='event-react', llm=json.loads((config_file or cfg).read_text()))
             job['task']['end_s'] = n*10
             job['record'].update(source_samples=n*2500, source_record_samples=n*2500)
             rows = [dict(record_id='00001', channel=ch, start_sample=i*2500, end_sample=(i+1)*2500,
@@ -51,7 +51,7 @@ class EpisodeTests(unittest.TestCase):
             cache, scores = Path(job['cache']), Path(job['scores'])
             (cache/'00001.windows.jsonl').write_text('\n'.join(map(json.dumps, rows)))
             np.save(cache/'00001.npy', np.ones((2*n,5000), dtype=np.float32))
-            np.save(scores/'00001.npy', np.tile([.1,.95], (2*n,1)))
+            np.save(scores/'00001.npy', np.repeat(score_pairs,2,axis=0) if score_pairs is not None else np.tile([.1,.95], (2*n,1)))
             wave = np.sin(np.arange(n*2500)/8.)
             if future is not None:
                 wave[2500:] = future

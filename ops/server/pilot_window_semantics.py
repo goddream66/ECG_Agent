@@ -84,7 +84,8 @@ def main(source, output, config, mode, swap_subtypes=False):
                 intent = None
                 if not swap_subtypes and cursor in LIFECYCLE_CHECKS and obs['status'] == 'accepted':
                     intent = staged.choose_action(model, counts, emit, audit, data['window_s'],
-                                                  obs, data['open_event'], data['candidate'])
+                                                  obs, data['open_event'], data['candidate'], staged.transition_context(
+                                                  data,cfg.get('window_band_profile') if mode=='union_reference' else None))
                 digest = hashlib.sha256(json.dumps(data['measurements'],sort_keys=True).encode()).hexdigest()
                 result = dict(**audit, mode=mode, measurement_digest=digest, window_s=data['window_s'],
                               observation=obs, intent=intent, counts=dict(counts))

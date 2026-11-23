@@ -52,3 +52,25 @@ class WindowSemanticsTests(unittest.TestCase):
         self.assertEqual(a,window_request(flip,tool,'','union_max'))
         self.assertEqual([r['fields']['target_score'] for r in a[0]['rhythm_measurements_by_time']],[.08,.95])
         self.assertNotEqual(window_request(data,tool,'','union_raw'),window_request(flip,tool,'','union_raw'))
+
+    def test_uncertain_window_can_investigate_but_only_grounded_pair_closes(self):
+        from tests.runtime import test_autonomous_events as fixture
+        from tests.runtime.test_react import reply
+        from tests.runtime.test_staged_review import act, boundary
+
+        def observe(label):
+            return reply('assess_window', dict(finding=label,evidence_ids=['E1'],reason='Current measurement'))
+        cfg = fixture.ROOT/'configs/ecg/react_qwen_window_reference_pilot.json'
+        for outcome, pair, closes in [('unlocalized',[.1,.04],False),
+                                       ('located',[.95,.1],False),('located',[.1,.04],True)]:
+            end = boundary(outcome, **({'before_id':'H1','after_id':'E1'} if outcome=='located' else {}))
+            actions = [fixture.measure(0),fixture.FINISH,observe('TARGET_PRESENT'),
+                       act('CONFIRM_EVENT',None),boundary('unlocalized'),fixture.measure(10),
+                       fixture.FINISH,observe('CANNOT_TELL'),act('REQUEST_CLOSE',1),end]
+            if outcome=='located' and not closes:
+                actions += [end]
+            result,trace,*_ = fixture.EpisodeTests().replay('fixed',actions,2,config_file=cfg,
+                                                           score_pairs=[[.1,.95],pair])
+            self.assertEqual(trace[-1]['action'],'REQUEST_CLOSE')
+            self.assertEqual(result['events'][0]['final_status']=='CLOSED',closes)
+            self.assertEqual(bool(result['pending_questions']),not closes)
