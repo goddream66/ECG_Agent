@@ -101,6 +101,7 @@ def run_job(job):
                     window_assessment_mode=job['llm'].get('window_assessment_mode','legacy'),
                     window_band_profile=job['llm'].get('window_band_profile'),
                     end_range_prompt=job['llm'].get('end_range_prompt',False),
+                    confirm_end_with_followup=job['llm'].get('confirm_end_with_followup',False),
                     compact_final_evidence=job['llm'].get('compact_final_evidence', True),
                     memory_write=job['llm'].get('memory_write', False),
                     memory_retrieve=job['llm'].get('memory_retrieve', False),

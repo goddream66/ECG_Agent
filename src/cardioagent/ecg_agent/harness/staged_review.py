@@ -5,6 +5,7 @@ import json
 from time import perf_counter
 from . import measured_event, split_event, window_semantics
 from .autonomous_decision import overlap
+from .end_review import end_evidence
 
 ASSESSMENTS = {'support':'SUPPORTS_TARGET', 'negative':'AGAINST_TARGET',
                'conflict':'UNCERTAIN', 'unavailable':'UNCERTAIN'}
@@ -109,7 +110,7 @@ def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode,
     return ask(model,counts,emit,audit,observation_data,tool,instruction,validate_observation)
 
 
-def choose_action(model, counts, emit, audit, window, obs, active, candidate, transition=None):
+def choose_action(model, counts, emit, audit, window, obs, active, candidate, transition=None, followup=False):
     a,b = window
     entity = active or candidate
     ident = entity['event_id'] if entity else None
@@ -119,6 +120,11 @@ def choose_action(model, counts, emit, audit, window, obs, active, candidate, tr
         actions=['CONFIRM_EVENT','REFINE_ONSET','HOLD_EVENT','DISMISS_CANDIDATE','NO_EVENT_CHANGE']
     else:
         actions=['CREATE_CANDIDATE','CONFIRM_EVENT','NO_EVENT_CHANGE']
+    if followup:
+        if obs['interpretation']!='support':
+            actions=[v for v in actions if v not in ('CREATE_CANDIDATE','CONFIRM_EVENT','CONTINUE_EVENT')]
+        elif active:
+            actions.remove('REQUEST_CLOSE')
     def lifecycle(args):
         action=args['action']
         if action not in actions or args['event_id']!=ident or (ident is not None and type(args['event_id']) is not int):
@@ -141,6 +147,11 @@ def choose_action(model, counts, emit, audit, window, obs, active, candidate, tr
                         'An accepted pair of before/after measurements is still required to close. '
                         'CONTINUE_EVENT means evidence of ongoing target, HOLD_EVENT means unresolved. '
                         'A prior open event itself provides no current rhythm evidence.')
+    if followup and active:
+        instruction += (' A single contrary window may start an end review. If support recovers, '
+                        'continue the same event and withdraw the suspicion. If the contrary direction '
+                        'persists, REQUEST_CLOSE lets you inspect and confirm the earlier boundary. '
+                        'If the evidence remains ambiguous, hold the event.')
     return ask(model,counts,emit,audit,data,tool,instruction,lifecycle)
 
 
@@ -177,11 +188,38 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
     candidate=state['candidate']
     profile = reviewer.window_band_profile if getattr(reviewer,'window_assessment_mode','legacy')=='union_reference' else None
     transition = transition_context(data,profile)
-    intent = choose_action(reviewer.model, reviewer.counts, emit, audit, [a,b], obs, active, candidate, transition)
+    followup = reviewer.confirm_end_with_followup
+    if followup and active:
+        transition['end_evidence']=end_evidence(transition['rhythm_by_time'],[a,b],active)
+    intent = choose_action(reviewer.model, reviewer.counts, emit, audit, [a,b], obs, active, candidate, transition, followup)
     emit('llm_steps',dict(audit,stage='lifecycle',status='lifecycle_result',intent=intent))
     action=intent.get('action')
     refinement=dict(status='not_requested')
-    if action in ('CREATE_CANDIDATE','CONFIRM_EVENT','REFINE_ONSET','REQUEST_CLOSE'):
+    if followup and action=='REQUEST_CLOSE':
+        proof=transition['end_evidence']
+        if proof['can_confirm'] and obs['interpretation']!='conflict':
+            def confirm(args):
+                if args['decision']=='WAIT':
+                    return dict(status='unlocalized',reason=args['reason'])
+                if args['decision']!='CONFIRM_END':
+                    raise ValueError('Choose WAIT or CONFIRM_END')
+                left, first, last=(proof[k] for k in ('before','first_against','later_against'))
+                return dict(status='located',reason=args['reason'],
+                            boundary=dict(kind='bracketed',range_s=[left['window_s'][0],first['window_s'][1]]),
+                            before_id=aliases[left['id']],after_id=aliases[first['id']],
+                            confirmation_evidence_id=aliases[last['id']])
+            tool=schema('confirm_event_end','Decide whether later evidence confirms the suspected end.',
+                        dict(decision=choice(['CONFIRM_END','WAIT']),reason=TEXT),['decision','reason'])
+            refinement=ask(reviewer.model,reviewer.counts,emit,audit,
+                           dict(window_s=[a,b],open_event=active,assessment=obs,**transition),tool,
+                           'Decide if the combined AF or AFL event has ended. Compare the last supported '
+                           'interval, first contrary interval and later confirmation. Confirm if these '
+                           'measurements support a sustained change. WAIT if recovery, poor reliability '
+                           'or conflicting evidence makes the change doubtful. Confirmation time is now; '
+                           'the boundary uses the earlier change, even when the exact second is unknown.',confirm)
+        else:
+            refinement=dict(status='unlocalized',reason='No current pair of successive contrary intervals after observed support.')
+    elif action in ('CREATE_CANDIDATE','CONFIRM_EVENT','REFINE_ONSET','REQUEST_CLOSE'):
         def refine(args):
             if args['status']=='unlocalized':
                 return dict(status='unlocalized',reason=args['reason'])
