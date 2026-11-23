@@ -227,9 +227,18 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
         boundary_data=dict(window_s=[a,b],event_action=action,open_event=active,measurements=list(rows.values()))
         if transition is not None:
             boundary_data.update(transition)
+        instruction = ('Localize only if '+direction+'. You may measure one retained interval. '
+                       'Use unlocalized if no pair supports the change. The ledger already saved the observation and lifecycle intent.')
+        if transition is not None and action=='REQUEST_CLOSE':
+            instruction += (' Here located means a TIME RANGE between two observed sides of a plausible '
+                            'end, even when its exact second is unknown. Before and after refer to the '
+                            'combined rhythm target: present earlier, absent later. Consider temporary '
+                            'score dips, conflicting leads or a return of support before claiming an end. '
+                            'If a change is supported, select its closest credible ordered before_id and '
+                            'after_id; the runtime records the bracket. If the same event might plausibly '
+                            'still be in progress, use unlocalized and name what prevents localization.')
         refinement=ask(reviewer.model,reviewer.counts,emit,audit,boundary_data,
-                       tool,'Localize only if '+direction+'. You may measure one retained interval. '
-                       'Use unlocalized if no pair supports the change. The ledger already saved the observation and lifecycle intent.',refine,extras,measure)
+                       tool,instruction,refine,extras,measure)
     payload=dict(**obs,window_assessment=obs,lifecycle=intent,refinement=refinement,
                  event_action=action or 'LIFECYCLE_ERROR',action=action or 'LIFECYCLE_ERROR',
                  boundary=refinement.get('boundary'),pending=None,decision_source='llm_staged')

@@ -27,7 +27,7 @@ def main(root, source):
     conditions={}
     cases={}
     comparisons={}
-    for mode in (*MODES, *(m for m in ('union_raw','union_max') if (root/m/'results.jsonl').exists())):
+    for mode in (*MODES, *(m for m in ('union_raw','union_max','union_reference') if (root/m/'results.jsonl').exists())):
         results=rows(root/mode/'results.jsonl')
         signatures={(r['source'],r['cursor_s']):r['measurement_digest'] for r in results}
         if len(signatures)!=len(results) or (conditions and signatures!=comparisons):
