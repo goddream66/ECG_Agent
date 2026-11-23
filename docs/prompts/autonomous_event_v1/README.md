@@ -137,20 +137,26 @@ Use retrieve_memory for a previous measurement or event. Past opinions can be wr
 **发给 Qwen 的英文**
 
 ```text
-Call submit_event_decision. Judge assessment_window_s and choose an allowed event action. For each evidence_ids entry, supply one evidence_attributions entry with its ID and role. SUPPORTS_TARGET means the measurement favors AF or AFL. AGAINST_TARGET means it weighs against both. Use CONTEXT_ONLY for quality, failed checks, or measurements with no clear direction. Low AF alone cannot rule out AFL; regular RR can occur in AFL. Shared samples do not provide independent votes.
+Submit one submit_event_decision for assessment_window_s. First assign one role to each cited ID using its actual lead, time and result.
+• ECGFounder: name the AF and AFL values. A high value for either can support the combined target. Low values for both can weigh against it when usable. An ambiguous pair can be CONTEXT_ONLY. A returned score by itself does not mean positive. Scores are uncalibrated.
+• Quality measures reliability. Beat count, RR regularity, R-peak times and isolated morphology proxies alone have no AF/AFL direction. Use CONTEXT_ONLY for these, failed checks, and unclear findings. To claim directional waveform evidence, describe the specific measured finding and comparison that justify that direction. Shared beats are correlated.
+• A role applies to the measured interval. Earlier support can anchor history. For a directional assessment cite at least one matching measurement overlapping this interval. Overlapping opposing rhythm evidence means UNCERTAIN/conflicting. For a single ambiguous result use UNCERTAIN/insufficient. All cited roles may be CONTEXT_ONLY.
 
-Ground a directional assessment in at least one matching measurement from this interval. If opposing roles overlap within this interval, use UNCERTAIN with cause conflicting and identify the disagreement. Different directions at successive times can describe a change. For other uncertainty, give the cause. Subtype or boundary uncertainty alone need not obscure the rhythm.
+Then choose the event action. In reason name the decisive ID, measured value or finding, and its meaning. For OPEN when you observed the target but did not witness onset, use {"kind":"onset_unobserved","first_supported_interval_s":[a,b]} with the supported interval. Use localized only for an observed internal change with measured beats on both sides. Never infer a point from a window edge. Use bracketed for a change bounded by measurements. Leave the midpoint to the evaluator.
 
-Use this review's E-numbers or historical IDs visible here. If nothing was measured, submit both lists empty. Give a brief reason. For a localized boundary cite a measured change within a local measurement; for a bracket cite a local measurement or evidence on both sides. Leave midpoint projection to the evaluator. For DEFER_DECISION state the open question and needed evidence. Set next_review_s according to the scheduling instructions.
+Copy IDs from the visible measurements. List each cited ID once in each list. With no measurements use empty lists. For SUPPORTS_TARGET or AGAINST_TARGET set uncertainty_cause=null. For UNCERTAIN choose missing, unusable, conflicting or insufficient. pending is null unless deferring a specific question. boundary is null for RECORD_ONLY and DEFER_DECISION. Follow the scheduling instruction below.
 ```
 
 **中文等义稿**
 
-调用 submit_event_decision。判断 assessment_window_s 内的心律，选择当前允许的事件动作。evidence_ids 每引用一项测量，都在 evidence_attributions 中填写它的 ID 和一个角色。测量支持房颤或房扑，填 SUPPORTS_TARGET；提示两者均不符合，填 AGAINST_TARGET；质量检查、失败测量、方向不清的测量，填 CONTEXT_ONLY。单凭 AF 低分无法排除房扑，房扑也可能有规则 RR。共用同一段波形的测量不能重复投票。
+提交一次 submit_event_decision，判断 assessment_window_s。先核对每个引用 ID 的导联、时间和实测结果，再逐项归因。
+• ECGFounder 要读 AF 和 AFL 两个值。任一亚型高分可支持合并目标；两者均低且测量可用，可作为反向线索；方向不清可填 CONTEXT_ONLY。成功返回分数不等于阳性，分数未经校准。
+• 质量描述测量可信度。单独的峰数、RR 规则性、峰时刻或孤立形态代理均填 CONTEXT_ONLY；失败和无方向的结果也如此。若主张波形有方向，指出具体实测征象、比较对象以及支持该方向的理由。共享心搏的测量相互关联。
+• 归因只对应实测时段。历史阳性可用于解释过去。当前方向性判断至少引用一项与本窗重叠且方向一致的证据。同一时段的正反节律证据冲突填 UNCERTAIN/conflicting，单项结果模糊填 UNCERTAIN/insufficient。所有引用都可以是 CONTEXT_ONLY。
 
-给整窗下方向性结论，至少要有一项覆盖本窗且方向一致的测量。同一段时间内正反证据重叠，选 UNCERTAIN，原因填 conflicting，指出哪两项相互矛盾。若前一段支持、后一段反对，则可能观察到了变化。其他不确定情况写明原因。亚型或边界难以确定时，仍可报告有依据的心律方向。
+再选择事件动作。reason 写出决定性的 ID、数值或征象及其含义。已看到目标但未观察到起点，需要 OPEN 时，用 {"kind":"onset_unobserved","first_supported_interval_s":[a,b]} 给出有支持的区间。只有局部测量内看到变化、两侧都有实测心搏，才用 localized。不要从窗口边缘推算精确起点。测量只约束两侧则用 bracketed，由评价器取中点。
 
-本轮测量用清单中的 E 编号，历史测量用本轮可见的 ID。什么都没测到时，两张引用列表都填空。简要说明动作理由。报告精确边界须引用局部测量内的实际变化；报告范围须引用覆盖该范围的局部测量或分别约束两侧的证据。评价器负责取中点。选择 DEFER_DECISION 时，留下待解决的问题及需要的证据；按调度要求填写 next_review_s。
+从本轮可见测量复制 ID，在两张列表各列一次。无测量时列表留空。方向明确时 uncertainty_cause 填 null；UNCERTAIN 时从 missing、unusable、conflicting、insufficient 中选。只有挂起具体问题才填写 pending。RECORD_ONLY 和 DEFER_DECISION 的 boundary 填 null。按下面的调度说明填写复核时间。
 
 ### `resume` · 处理上次的待办
 

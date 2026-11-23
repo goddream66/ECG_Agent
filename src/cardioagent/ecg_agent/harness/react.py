@@ -421,9 +421,12 @@ class ReActReview:
                 if self.event_review_mode:
                     messages[0]['content'] = autonomous_decision.prompt(state, 'final')
                     entries = [{'id': alias, 'evidence_id': key} for alias, key in aliases.items()]
-                    if not self.compact_final_evidence:
-                        for entry, row in zip(entries, session.calls):
-                            entry.update({k: row[k] for k in ('tool', 'lead', 'window_s', 'status', 'result')})
+                    for entry, row in zip(entries, session.calls):
+                        entry.update({k: row[k] for k in ('tool', 'lead', 'window_s', 'status')})
+                        if not self.compact_final_evidence:
+                            entry['result'] = row['result']
+                        elif row['tool'] == 'score_ecgfounder' and row['status'] == 'ok':
+                            entry['result'] = {k: row['result'].get(k) for k in ('af_score', 'afl_score')}
                     messages.append({'role': 'user', 'content': json.dumps({'phase': 'final_decision',
                                                                             'measurement_ids': entries})})
                 else:
