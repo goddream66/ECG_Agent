@@ -3,7 +3,7 @@ from copy import deepcopy
 from math import isfinite
 import json
 from time import perf_counter
-from . import measured_event, split_event
+from . import measured_event, split_event, window_semantics
 from .autonomous_decision import overlap
 
 ASSESSMENTS = {'support':'SUPPORTS_TARGET', 'negative':'AGAINST_TARGET',
@@ -73,21 +73,16 @@ def ask(model, counts, emit, audit, data, tool, instruction, validate, extras=()
     return dict(status='error',reason=error)
 
 
-def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, tools):
-    data=json.loads(measured_event.final_context(state,aliases,ledger)[1]['content'])
-    rows={r['id']:r for r in data['measurements']}
-    a,b=state['window_s']
-    def usable(key):
-        r=rows.get(key,{})
-        return (r.get('direction_allowed') and all(type(r['fields'].get(k)) in (int,float) and isfinite(r['fields'][k]) for k in measured_event.PAIR)
-                and r['window_s'][1]<=b and ledger.get(aliases[key])['available_at_s']<=b)
+def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode):
+    rows = {r['id']:r for r in data['measurements']}
+    a,b = data['window_s']
     def interpret(args):
         label=args['interpretation']
         if label not in ASSESSMENTS or not isinstance(args['evidence_ids'],list):
             raise ValueError('Choose a listed interpretation and a list of evidence IDs')
         ids=list(dict.fromkeys(args['evidence_ids']))
         for key in ids:
-            if key not in rows or ledger.get(aliases[key])['available_at_s']>b:
+            if key not in rows or not visible_now(key):
                 raise ValueError(f'{key} is not visible at this cursor')
         supporting=[key for key in ids if usable(key) and overlap(rows[key]['window_s'],a,b)]
         if label in ('support','negative') and not supporting:
@@ -102,16 +97,18 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
     tool=schema('assess_window','Record your judgment of this interval.',
                 dict(interpretation=choice(ASSESSMENTS),evidence_ids=dict(type='array',items=choice(rows) if rows else TEXT),reason=TEXT),
                 ['interpretation','evidence_ids','reason'])
-    obs=ask(reviewer.model,reviewer.counts,emit,audit,data,tool,
-            'Judge the current interval only. Cite the measurements you used. The runtime identifies auxiliary tools as context. '
-            'support favors either subtype, negative weighs against both, conflict means opposed current measurements, unavailable includes insufficient evidence.',interpret)
-    if obs['status']=='error':
-        return dict(action='ACTION_ERROR',decision='ACTION_ERROR',evidence_ids=[],reason=obs['reason'],window_assessment=obs)
-    emit('assessments',dict(audit,stage='window',window_s=[a,b],**obs))
-    active=state['open_event']
-    candidate=state['candidate']
-    entity=active or candidate
-    ident=entity['event_id'] if entity else None
+    instruction=('Judge the current interval only. Cite the measurements you used. The runtime identifies auxiliary tools as context. '
+            'support favors either subtype, negative weighs against both, conflict means opposed current measurements, unavailable includes insufficient evidence.')
+    observation_data, tool, instruction = window_semantics.window_request(data, tool, instruction, mode)
+    def validate_observation(args):
+        return interpret(window_semantics.canonical_arguments(args, mode))
+    return ask(model,counts,emit,audit,observation_data,tool,instruction,validate_observation)
+
+
+def choose_action(model, counts, emit, audit, window, obs, active, candidate):
+    a,b = window
+    entity = active or candidate
+    ident = entity['event_id'] if entity else None
     if active:
         actions=['CONTINUE_EVENT','HOLD_EVENT','REQUEST_CLOSE','REFINE_ONSET','NO_EVENT_CHANGE']
     elif candidate:
@@ -129,10 +126,29 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
         return dict(status='accepted',**args)
     tool=schema('choose_event_action','Update the episode ledger independently of its boundary.',
                 dict(action=choice(actions),event_id={'enum':[ident]},reason=TEXT),['action','event_id','reason'])
-    intent=ask(reviewer.model,reviewer.counts,emit,audit,
+    return ask(model,counts,emit,audit,
                dict(window_s=[a,b],assessment=obs,open_event=active,candidate=candidate,event_id=ident),
                tool,'CREATE_CANDIDATE records a provisional finding. CONFIRM_EVENT registers an episode now, even on first detection. '
                'You may hold or leave the ledger unchanged. CONFIRM_EVENT never requires a known onset. REQUEST_CLOSE starts an end investigation.',lifecycle)
+
+
+def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, tools):
+    data=json.loads(measured_event.final_context(state,aliases,ledger)[1]['content'])
+    rows={r['id']:r for r in data['measurements']}
+    a,b=state['window_s']
+    def usable(key):
+        r=rows.get(key,{})
+        return (r.get('direction_allowed') and all(type(r['fields'].get(k)) in (int,float) and isfinite(r['fields'][k]) for k in measured_event.PAIR)
+                and r['window_s'][1]<=b and ledger.get(aliases[key])['available_at_s']<=b)
+    obs = assess(reviewer.model, reviewer.counts, emit, audit, data, aliases, usable,
+                 lambda key: ledger.get(aliases[key])['available_at_s'] <= b,
+                 getattr(reviewer, 'window_assessment_mode', 'legacy'))
+    if obs['status']=='error':
+        return dict(action='ACTION_ERROR',decision='ACTION_ERROR',evidence_ids=[],reason=obs['reason'],window_assessment=obs)
+    emit('assessments',dict(audit,stage='window',window_s=[a,b],**obs))
+    active=state['open_event']
+    candidate=state['candidate']
+    intent = choose_action(reviewer.model, reviewer.counts, emit, audit, [a,b], obs, active, candidate)
     emit('llm_steps',dict(audit,stage='lifecycle',status='lifecycle_result',intent=intent))
     action=intent.get('action')
     refinement=dict(status='not_requested')

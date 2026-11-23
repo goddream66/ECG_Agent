@@ -172,7 +172,8 @@ class ReActReview:
                  rule_safety_fallback=False, memory_write=False, memory_retrieve=False,
                  llm_window_interpretation=False, llm_tool_max_calls=None,
                  investigation_checkpoint=False, fact_history=False, event_review_mode=None,
-                 compact_final_evidence=True, split_event_review=False, measured_event_review=False, staged_event_review=False):
+                 compact_final_evidence=True, split_event_review=False, measured_event_review=False, staged_event_review=False,
+                 window_assessment_mode='legacy'):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -194,6 +195,10 @@ class ReActReview:
         if event_review_mode and (not llm_window_interpretation or rule_safety_fallback or investigation_checkpoint):
             raise ValueError('Autonomous events require separate LLM interpretation without rule fallback or focus checkpoint')
         self.event_review_mode = event_review_mode
+        from .window_semantics import MODES
+        if window_assessment_mode not in MODES or (window_assessment_mode != 'legacy' and not staged_event_review):
+            raise ValueError('Window assessment experiment requires a valid staged mode')
+        self.window_assessment_mode = window_assessment_mode
         self.staged_event_review = staged_event_review
         self.measured_event_review = measured_event_review or staged_event_review
         self.split_event_review = split_event_review or self.measured_event_review
