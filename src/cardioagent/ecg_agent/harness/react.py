@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from cardioagent.ecg_agent.policies.rule_review import decide_event
 from .event_decision import WindowEventDecision, overlaps_current, validate_grounding
-from . import autonomous_decision, split_event
+from . import autonomous_decision, split_event, measured_event
 
 PROMPT = Path(__file__).resolve().parents[1] / 'prompts/react_review_v1.txt'
 WINDOW_PROMPT = PROMPT.with_name('react_window_decision_v2.txt')
@@ -172,7 +172,7 @@ class ReActReview:
                  rule_safety_fallback=False, memory_write=False, memory_retrieve=False,
                  llm_window_interpretation=False, llm_tool_max_calls=None,
                  investigation_checkpoint=False, fact_history=False, event_review_mode=None,
-                 compact_final_evidence=True, split_event_review=False):
+                 compact_final_evidence=True, split_event_review=False, measured_event_review=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -194,7 +194,8 @@ class ReActReview:
         if event_review_mode and (not llm_window_interpretation or rule_safety_fallback or investigation_checkpoint):
             raise ValueError('Autonomous events require separate LLM interpretation without rule fallback or focus checkpoint')
         self.event_review_mode = event_review_mode
-        self.split_event_review = split_event_review
+        self.measured_event_review = measured_event_review
+        self.split_event_review = split_event_review or measured_event_review
         self.compact_final_evidence = compact_final_evidence
         self.investigation_checkpoint = investigation_checkpoint
         self.fact_history = fact_history
@@ -377,6 +378,8 @@ class ReActReview:
                 for field in ('confirmed_support_intervals','opposing_intervals','unknown_intervals'):
                     state['open_event'][field] = deepcopy(tracker.active[field][-3:])
             contract = split_event if self.split_event_review else autonomous_decision
+            if self.measured_event_review:
+                contract = measured_event
             messages = [{'role':'system', 'content':contract.prompt(state, 'acquire')},
                         {'role':'user', 'content':json.dumps(state, allow_nan=False)}]
             tools = [tool for tool in session.registry.function_schemas(include_experimental=True)
@@ -420,15 +423,27 @@ class ReActReview:
         aliases = {}
         final_context_added = False
         total_rounds = self.max_rounds + (1 if self.separate_final_decision else 0)
-        for step in range(total_rounds):
+        recovery_turn = False
+        recovery_used = False
+        for step in range(total_rounds + (2 if self.measured_event_review else 0)):
             final_phase = self.separate_final_decision and (measurement_done or step >= self.max_rounds - 1)
             budget_exhausted = len(session.calls) >= session.max_calls
             if (self.separate_final_decision and budget_exhausted
                     and not self.memory_retrieve and not (writable_evidence - written)):
                 final_phase = True
+            if recovery_turn:
+                final_phase = False
+                recovery_turn = False
+                measurement_done = True  # allow one acquisition turn before returning to final
             if final_phase and not final_context_added:
                 aliases = {f'E{i}': row['evidence_id'] for i, row in enumerate(session.calls, 1)}
-                if self.event_review_mode:
+                if self.measured_event_review:
+                    history_keys = sorted(key for key in visible_history if ledger.get(key)['tool'] == 'score_ecgfounder')
+                    historical = dict.fromkeys(history_keys + sorted(retrieved_ids))
+                    current_ids = set(aliases.values())
+                    aliases.update({f'H{i}': key for i, key in enumerate(historical, 1) if key not in current_ids})
+                    messages = measured_event.final_context(dict(state, remaining_tool_calls=session.max_calls-len(session.calls)), aliases, ledger)
+                elif self.event_review_mode:
                     messages[0]['content'] = contract.prompt(state, 'final')
                     entries = [{'id': alias, 'evidence_id': key} for alias, key in aliases.items()]
                     for entry, row in zip(entries, session.calls):
@@ -456,7 +471,8 @@ class ReActReview:
             began = perf_counter()
             audit = dict(identity, cursor_s=end, step=step)
             if self.llm_window_interpretation:
-                audit['phase'] = 'retry' if decision_retries else 'final' if final_phase else 'acquisition'
+                audit['phase'] = ('evidence_recovery' if recovery_used and not final_phase else
+                                  'retry' if decision_retries else 'final' if final_phase else 'acquisition')
             self.counts['llm_calls'] += 1
             try:
                 try:
@@ -561,6 +577,8 @@ class ReActReview:
                         evidence_ids = [row['evidence_id'] for row in matches if query.scope == 'evidence']
                         event_ids = [row['event_id'] for row in matches if query.scope == 'events']
                         retrieved_ids.update(evidence_ids)
+                        if self.measured_event_review and query.scope == 'events':
+                            state.setdefault('retrieved_events', []).extend(matches)
                         outcome = {'status': 'memory_retrieved', 'scope': query.scope, 'matches': matches}
                         emit('llm_steps', dict(audit, status='memory_retrieved', count=len(matches),
                                                evidence_ids=evidence_ids, event_ids=event_ids))
@@ -577,8 +595,12 @@ class ReActReview:
                 if name == 'submit_event_decision' and self.unified_event_decision:
                     if self.event_review_mode:
                         validate_event = split_event.event if self.split_event_review else autonomous_decision.validate
+                        visible = set(aliases.values()) | visible_history | retrieved_ids
+                        if self.measured_event_review:
+                            validate_event = measured_event.event
+                            visible = set(aliases.values())
                         self.last_action = validate_event(
-                            args, aliases, set(aliases.values()) | visible_history | retrieved_ids,
+                            args, aliases, visible,
                             ledger, state, CLOSURE_EVIDENCE_TOOLS)
                         if self.split_event_review:
                             scheduling = split_event.appointment(self.model,state,self.last_action,self.counts,emit,audit)
@@ -702,10 +724,22 @@ class ReActReview:
                                        'Proceed to final decision using available evidence.')
                         messages.append({'role': 'user', 'content': f'{status}: {str(exc)[:500]}. {instruction}'})
                         continue
+                    if (self.measured_event_review and isinstance(exc, measured_event.BoundaryEvidenceNeeded)
+                            and not recovery_used and not decision_retries and not budget_exhausted):
+                        recovery_used = recovery_turn = True
+                        final_context_added = False
+                        messages[0]['content'] = contract.prompt(state, 'acquire')
+                        messages.append({'role':'user', 'content':'Boundary rejected: '+str(exc)+
+                                         ' One acquisition turn remains. Choose one measurement, retrieval, or finish_measurements.'})
+                        emit('llm_steps', dict(audit, status='evidence_recovery_requested'))
+                        continue
                     decision_retries += 1
                     if decision_retries <= 1 and self.event_review_mode:
                         messages[0]['content'] = contract.prompt(state, 'final', retry=True)
-                        messages.append({'role': 'user', 'content': 'Rejected: ' + str(exc)[:500]})
+                        detail = 'Rejected: ' + str(exc)[:500]
+                        if self.measured_event_review:
+                            detail += ' Repair with submit_event_decision only. Previous submission: ' + json.dumps(audit.get('arguments', {}))
+                        messages.append({'role': 'user', 'content': detail})
                         continue
                     if decision_retries <= 1:
                         messages.append({'role': 'user', 'content':

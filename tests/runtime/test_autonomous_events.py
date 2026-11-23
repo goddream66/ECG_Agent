@@ -41,7 +41,7 @@ class EpisodeTests(unittest.TestCase):
             job = fixtures.EventCheckpointTests().make_job(Path(tmp))
             cfg = ROOT / f'configs/ecg/react_qwen_episode_{mode}.json'
             if split:
-                cfg = cfg.with_stem(cfg.stem + '_v15')
+                cfg = cfg.with_stem(cfg.stem + ('_v16' if split == 'v16' else '_v15'))
             job.update(policy='event-react', llm=json.loads(cfg.read_text()))
             job['task']['end_s'] = n*10
             job['record'].update(source_samples=n*2500, source_record_samples=n*2500)

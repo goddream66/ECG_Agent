@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
 
 PROMPT_PATH = Path(__file__).resolve().parents[1] / 'prompts/autonomous_event_v1.json'
@@ -66,10 +66,11 @@ class Decision(StrictModel):
     reason: str = Field(min_length=1, max_length=4096)
 
     @model_validator(mode='after')
-    def check_fields(self):
+    def check_fields(self, info: ValidationInfo):
         if (self.assessment == 'UNCERTAIN') != (self.uncertainty_cause is not None):
             raise ValueError('Give an uncertainty cause exactly when assessment is UNCERTAIN')
-        if (self.event_action == 'DEFER_DECISION') != (self.pending is not None):
+        open_followup = self.event_action == 'OPEN' and (info.context or {}).get('measured_contract')
+        if not open_followup and (self.event_action == 'DEFER_DECISION') != (self.pending is not None):
             raise ValueError('Only a deferred question requires pending details')
         if (self.event_action in ('OPEN', 'CLOSE')) != (self.boundary is not None):
             raise ValueError('OPEN and CLOSE require a boundary; other actions use null')
@@ -134,9 +135,10 @@ def timed_beats(row):
     return [t for t in times if isinstance(t, (int, float)) and row['window_s'][0] <= t < row['window_s'][1]]
 
 
-def validate(args, aliases, visible_ids, ledger, snapshot, boundary_tools):
-    decision = submission_type(snapshot).model_validate(args)
-    if snapshot['pending_question'] and (decision.pending_resolution == 'still_pending') != (decision.pending is not None):
+def validate(args, aliases, visible_ids, ledger, snapshot, boundary_tools, *, measured_contract=False):
+    decision = submission_type(snapshot).model_validate(args, context=dict(measured_contract=measured_contract))
+    new_followup = measured_contract and decision.event_action == 'OPEN' and decision.pending is not None
+    if snapshot['pending_question'] and not new_followup and (decision.pending_resolution == 'still_pending') != (decision.pending is not None):
         raise ValueError('Choose still_pending when deferring the existing question, otherwise resolved or withdrawn')
     ids = [aliases.get(key, key) for key in decision.evidence_ids]
     if len(ids) != len(set(ids)) or not set(ids) <= visible_ids:
@@ -188,7 +190,10 @@ def validate(args, aliases, visible_ids, ledger, snapshot, boundary_tools):
         rhythm = [r for r in rows if is_rhythm(r)]
         local = [r for r in rhythm if r['tool'] in boundary_tools
                  and any(r['result'].get(k) for k in ('beats', 'r_peaks_s', 'peak'))]
-        if isinstance(decision.boundary, Point):
+        if measured_contract and not isinstance(decision.boundary, UnobservedOnset):
+            from .measured_event import validate_boundary
+            validate_boundary(decision.boundary, decision.event_action, directional)
+        elif isinstance(decision.boundary, Point):
             if not any(times and min(times) < a < max(times) for times in map(timed_beats, local)):
                 raise ValueError('A point needs a local measured change with beats before and after it; otherwise bracket it')
         elif isinstance(decision.boundary, UnobservedOnset):
@@ -202,7 +207,8 @@ def validate(args, aliases, visible_ids, ledger, snapshot, boundary_tools):
             anchored = any(x <= a <= y <= z <= b <= w for x, y in spans for z, w in spans)
             if b <= a or not (anchored or any(r['window_s'][0] <= a < b <= r['window_s'][1] for r in local)):
                 raise ValueError('Bracket needs a local measurement or separate rhythm measurements anchoring both sides')
-        if decision.event_action == 'CLOSE' and a <= snapshot['open_event']['estimated_start_s']:
+        end_estimate = (a + b) / 2 if measured_contract else a
+        if decision.event_action == 'CLOSE' and end_estimate <= snapshot['open_event']['estimated_start_s']:
             raise ValueError('End must follow the registered onset')
     payload = decision.model_dump()
     payload['evidence_ids'] = ids

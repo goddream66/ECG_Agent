@@ -187,11 +187,16 @@ class AutonomousEvents:
         self.next_review = payload['next_review_s']
         question_change = None
         if payload['pending']:
+            if self.pending and payload.get('pending_resolution') in ('resolved', 'withdrawn'):
+                self.pending.update(status=payload['pending_resolution'], resolution=payload['reason'], reviewed_at_s=end)
+                self.pending = None
             if self.pending is None:
                 self.pending = dict(question_id=len(self.questions)+1, first_asked_at_s=end,
                                     original_question=payload['pending']['question'],
                                     event_id=self.active['event_id'] if self.active else None)
                 self.questions.append(self.pending)
+            if self.active:
+                self.pending['event_id'] = self.active['event_id']
             self.pending.update(payload['pending'], status='pending', reviewed_at_s=end,
                                 next_review_s=self.next_review, evidence_ids=payload['evidence_ids'][:])
             question_change = deepcopy(self.pending)
