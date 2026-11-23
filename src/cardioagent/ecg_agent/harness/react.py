@@ -174,7 +174,7 @@ class ReActReview:
                  investigation_checkpoint=False, fact_history=False, event_review_mode=None,
                  compact_final_evidence=True, split_event_review=False, measured_event_review=False, staged_event_review=False,
                  window_assessment_mode='legacy', window_band_profile=None, end_range_prompt=False,
-                 confirm_end_with_followup=False):
+                 confirm_end_with_followup=False, compare_rhythm_leads=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -207,6 +207,9 @@ class ReActReview:
         if type(confirm_end_with_followup) is not bool or (confirm_end_with_followup and window_assessment_mode!='union_reference'):
             raise ValueError('End follow-up requires the union_reference window assessment')
         self.confirm_end_with_followup = confirm_end_with_followup
+        if type(compare_rhythm_leads) is not bool or (compare_rhythm_leads and not confirm_end_with_followup):
+            raise ValueError('Paired-lead follow-up requires the evidence-confirmed event policy')
+        self.compare_rhythm_leads = compare_rhythm_leads
         self.staged_event_review = staged_event_review
         self.measured_event_review = measured_event_review or staged_event_review
         self.split_event_review = split_event_review or self.measured_event_review
@@ -405,6 +408,13 @@ class ReActReview:
                     fn['description'] += ' ' + split_event.TOOL_GUIDE[fn['name']]
             if self.staged_event_review:
                 messages[0]['content'] = staged_review.SYSTEM + '\n' + autonomous_decision._fragments()['acquire']['en'] + '\nAfter acquisition you will submit the window assessment, choose a lifecycle action and optionally investigate a boundary. An observed onset is optional.'
+                if self.compare_rhythm_leads:
+                    messages[0]['content'] += (' First inspect the current primary ECGFounder scores. A new high score in background '
+                        'or a sudden low score in an open event can be transient. To check a suspected change, you can '
+                        'call score_ecgfounder on the OTHER available ECG lead over the SAME ten seconds. '
+                        'Compare max(AF,AFL) across leads; the two scores on one lead are subtypes of the same target. '
+                        'Measure another lead when that comparison could change your decision. If the result is already '
+                        'available, reuse it. End measurement when you have the useful evidence.')
             tools += [contract.final_tool(state),
                       {'type':'function','function':{'name':'finish_measurements',
                        'description':'Finish this round of measurement and submit the observation and event action.',

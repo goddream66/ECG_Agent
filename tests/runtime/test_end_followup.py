@@ -1,12 +1,29 @@
 import unittest
+from collections import Counter
+import json
 
 from cardioagent.ecg_agent.harness.end_review import end_evidence
 from tests.runtime import test_autonomous_events as fixture
 from tests.runtime.test_react import reply
+from tests.runtime.test_react import ScriptModel
+from cardioagent.ecg_agent.harness.staged_review import assess
 from tests.runtime.test_staged_review import act, boundary
 
 
 class EndFollowupTests(unittest.TestCase):
+    def test_disagreeing_measured_leads_cannot_be_hidden_by_selective_citation(self):
+        cfg=json.loads((fixture.ROOT/'configs/ecg/react_qwen_followup_leads.json').read_text())
+        rows=[dict(id=k,tool='score_ecgfounder',lead=lead,window_s=[10,20],direction_allowed=True,
+                   status='ok',fields=dict(af_score=af,afl_score=.05))
+              for k,lead,af in [('E1','ECG1',.98),('E2','ECG2',.10)]]
+        data=dict(window_s=[10,20],cursor_s=20,primary_lead='ECG1',measurements=rows)
+        model=ScriptModel([reply('assess_window',dict(finding='TARGET_PRESENT',evidence_ids=['E1'],reason='one lead high')),
+                           reply('assess_window',dict(finding='CONFLICTING_MEASUREMENTS',evidence_ids=['E1','E2'],reason='opposing directions'))])
+        steps=[]
+        out=assess(model,Counter(),lambda _,s:steps.append(s),{},data,{'E1':'hash1','E2':'hash2'},
+                   lambda x:True,lambda x:True,'union_reference',cfg['window_band_profile'],True)
+        self.assertEqual([s['status'] for s in steps],['stage_rejected','stage_committed'])
+        self.assertEqual(out['interpretation'],'conflict')
     def test_overlaps_gaps_conflicts_and_future(self):
         def row(a,b,d):
             return dict(id=f'{a}-{b}-{d}',window_s=[a,b], reference=dict(direction=d))
