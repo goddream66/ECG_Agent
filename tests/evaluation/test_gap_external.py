@@ -7,7 +7,7 @@ import numpy as np
 import wfdb
 
 from cardioagent.ecg_agent.experiments.gap_external import SOURCE_FS, live_repair
-from cardioagent.ecg_agent.experiments.ltafdb_adaptive_pilot import select_clips
+from cardioagent.ecg_agent.experiments.ltafdb_adaptive_pilot import continuous_sections, select_clips
 from cardioagent.ecg_agent.experiments.runner import run_job, validate_dataset
 from cardioagent.ecg_agent.data.offline import cache_manifest, write_record
 from cardioagent.ecg_agent.harness.historical_window import HistoricalWindow
@@ -16,6 +16,18 @@ from cardioagent.ecg_agent.schemas import EvidenceContext
 
 
 class GapExternalTest(TestCase):
+    def test_continuous_replay_excludes_prior_records_and_samples_only_valid_aligned_time(self):
+        tasks = {name:dict(record_id=name,start_s=5,end_s=3510) for name in ('a','b','c','d','e','f')}
+        valid = {name:dict(valid_intervals=[[1,121],[132,1749],[1901,3499]]) for name in tasks}
+        selected = continuous_sections(tasks,valid,{'b','f'})
+        self.assertEqual(selected, continuous_sections(dict(reversed(tasks.items())),valid,{'b','f'}))
+        self.assertEqual({task['record_id'] for _,task in selected}, {'a','c','d','e'})
+        for key,task in selected:
+            a,b=task['start_s'],task['end_s']
+            self.assertEqual((a%10,b-a), (0,1200))
+            self.assertTrue(any(lo<=a<b<=hi for lo,hi in valid[key]['valid_intervals']))
+            self.assertEqual(set(task), {'task_id','record_id','source_database','start_s','end_s'})
+
     def test_external_job_releases_completed_128_hz_windows(self):
         with TemporaryDirectory() as work:
             root = Path(work)

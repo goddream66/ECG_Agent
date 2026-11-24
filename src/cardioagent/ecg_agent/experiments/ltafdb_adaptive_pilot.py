@@ -3,7 +3,7 @@
 import argparse
 import json
 from hashlib import sha256
-from math import floor
+from math import ceil, floor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
@@ -20,6 +20,7 @@ from cardioagent.ecg_agent.harness.execution import build_model
 WINDOW_S = 120
 STRATA = ('short_event', 'event_end', 'background')
 SELECTION_SEED = 'cardioagent-ltafdb-adaptive-20261124-v1'
+CONTINUOUS_SEED = 'cardioagent-ltafdb-continuous-20261124-v1'
 
 
 def record_candidates(task, intervals, valid):
@@ -76,7 +77,38 @@ def select_clips(tasks, references, validity, per_stratum=4):
     return selected
 
 
-def prepare(source, output):
+def continuous_sections(tasks, validity, excluded, count=4, seconds=1200):
+    """Rank records and aligned positions without using rhythm annotations or detector scores."""
+    def rank(*parts):
+        return sha256(':'.join((CONTINUOUS_SEED,*parts)).encode()).digest()
+
+    eligible = []
+    for key, task in tasks.items():
+        name = task['record_id']
+        if name in excluded:
+            continue
+        spans = []
+        for left, right in validity[name]['valid_intervals']:
+            lo = 10 * ceil(max(left, task['start_s']) / 10)
+            hi = 10 * floor((min(right, task['end_s'])-seconds) / 10)
+            if hi >= lo:
+                spans.append(range(lo, hi+1, 10))
+        positions = sum(map(len,spans))
+        if positions:
+            index = int.from_bytes(rank(name,'position'),'big') % positions
+            for span in spans:
+                if index < len(span):
+                    eligible.append((rank(name,'record'), name, span[index], key))
+                    break
+                index -= len(span)
+    chosen = sorted(eligible)[:count]
+    if len(chosen) != count or len({row[1] for row in chosen}) != count:
+        raise ValueError('Insufficient distinct eligible records for continuous evaluation')
+    return [(key, dict(task_id=f'ltafdb-adaptive-{name}', record_id=name, source_database='ltafdb',
+                       start_s=start, end_s=start+seconds)) for _, name, start, key in chosen]
+
+
+def prepare(source, output, *, exclude_selection=None):
     manifest = json.loads((source / 'manifest.json').read_bytes())
     for file, field in [('tasks.jsonl', 'tasks_sha256'), ('references.jsonl', 'references_sha256')]:
         if digest(source / file) != manifest[field]:
@@ -92,7 +124,21 @@ def prepare(source, output):
             raise ValueError(f'External validity receipt changed for {name}')
         validity[name] = json.loads(path.read_bytes())['records'][task['task_id']]
     raw, adapted = Path(manifest['raw_root']), source / 'channels'
-    clips = select_clips(tasks, references, validity)
+    excluded = set()
+    if exclude_selection is None:
+        clips = select_clips(tasks, references, validity)
+    else:
+        prior = json.loads(exclude_selection.read_bytes())
+        if prior['source_manifest_sha256'] != digest(source/'manifest.json'):
+            raise ValueError('The prior selection must refer to the same source')
+        excluded = {row['record_id'] for row in prior['clips']}
+        clips = []
+        for key, task in continuous_sections(tasks, validity, excluded):
+            a, b = task['start_s'], task['end_s']
+            events = intersection(references[key]['intervals'], [[a,b]])
+            reference = dict(task_id=task['task_id'], start_s=a, end_s=b, intervals=events,
+                             burden=union_seconds(events)/(b-a), tau=.5, burden_floor=.02)
+            clips.append((task, reference, 'continuous', key))
     if output.exists():
         raise FileExistsError(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -116,8 +162,11 @@ def prepare(source, output):
         evaluation = staging / 'evaluation'
         evaluation.mkdir()
         write_jsonl(evaluation / 'references.jsonl', [reference for _, reference, _, _ in clips])
+        protocol = (dict(seed=CONTINUOUS_SEED, seconds_per_clip=1200, exclusion_sha256=digest(exclude_selection),
+                         excluded_records=sorted(excluded)) if exclude_selection is not None
+                    else dict(seed=SELECTION_SEED, seconds_per_clip=WINDOW_S))
         save_json(evaluation / 'selection.json', dict(
-            seed=SELECTION_SEED, seconds_per_clip=WINDOW_S, clips=selection,
+            **protocol, clips=selection,
             source_manifest_sha256=digest(source / 'manifest.json'),
             tasks_sha256=digest(staging / 'tasks.jsonl'), references_sha256=digest(evaluation / 'references.jsonl')))
         staging.rename(output)
@@ -151,6 +200,7 @@ def main():
     build = sub.add_parser('prepare')
     build.add_argument('--source', required=True, type=Path)
     build.add_argument('--output', required=True, type=Path)
+    build.add_argument('--exclude-selection', type=Path, help='Draw continuous segments on other records.')
     baseline = sub.add_parser('baseline')
     baseline.add_argument('--cache', required=True, type=Path)
     baseline.add_argument('--task', required=True, type=Path)
@@ -159,7 +209,7 @@ def main():
     baseline.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     if args.action == 'prepare':
-        prepare(args.source, args.output)
+        prepare(args.source, args.output, exclude_selection=args.exclude_selection)
     else:
         score_baseline(args.cache, args.task, args.models, args.device, args.output)
 
