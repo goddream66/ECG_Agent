@@ -65,6 +65,10 @@ def numeric_fields(row):
             for i in sorted({0, len(data)-1}):
                 visit(data[i], f'{prefix}.{i}')
     visit(row['result'], '')
+    # These two legacy algorithms return wall-clock latency alongside ECG measurements.
+    # Leave the timer in the raw ledger for cost reporting; it cannot support a rhythm judgment.
+    if row.get('tool') in ('assess_quality','detect_beats'):
+        fields.pop('duration_ms', None)
     return fields
 
 

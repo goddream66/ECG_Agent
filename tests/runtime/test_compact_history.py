@@ -5,10 +5,22 @@ from collections import Counter
 
 from cardioagent.ecg_agent.harness.compact_history import TABLE_GUIDE, table_view
 from cardioagent.ecg_agent.harness.staged_review import ask, schema, TEXT
+from cardioagent.ecg_agent.harness.measured_event import numeric_fields
 from tests.runtime.test_react import reply, ScriptModel
 
 
 class CompactHistoryTests(unittest.TestCase):
+    def test_runtime_fluctuations_leave_physio_evidence_and_original_cost_intact(self):
+        for tool in ('assess_quality','detect_beats'):
+            record = dict(tool=tool,result=dict(duration_ms=1.2306,score=.89,beat=dict(duration_ms=100)))
+            a = numeric_fields(record)
+            record['result']['duration_ms'] = 1.2316
+            self.assertEqual(a,numeric_fields(record))
+            self.assertEqual(a,{'score':.89,'beat.duration_ms':100})
+            self.assertEqual(record['result']['duration_ms'],1.2316)
+        self.assertEqual(numeric_fields(dict(tool='other_measurement',result=dict(duration_ms=120))),
+                         {'duration_ms':120})
+
     def test_prompt_retains_order_timing_measurements_and_ledger_attribution(self):
         rows = [dict(id=f'H{i}', tool='score_ecgfounder', lead=f'ECG{1+i%2}', window_s=[10*i,10*i+10],
                      status='ok', warnings=['Scores are uncalibrated'], direction_allowed=True,
