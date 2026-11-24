@@ -33,3 +33,37 @@ def acquisition_prompt():
         "Do not repeat a finished measurement. Use finish_measurements as soon as more measurements "
         "are unlikely to help. A separate stage will request your judgment and event action."
     )
+
+
+def measurement_menu(state, calls, *, live_scoring):
+    """Offer only distinct measurements of arrived, retained samples."""
+    start, end = state['window_s']
+    primary = state['primary_lead']
+    alternatives = [lead for lead in state['available_leads'] if lead != primary]
+    other = alternatives[0] if alternatives else None
+    seen = {(row['tool'], row['lead'], tuple(row['window_s'] or ())) for row in calls}
+    options = {}
+
+    def offer(name, tool, lead, left, right):
+        if lead and (tool, lead, (left, right)) not in seen:
+            options[name] = dict(tool=tool, lead=lead, start_s=left, end_s=right)
+
+    offer('compare_current_leads', 'score_ecgfounder', other, start, end)
+    offer('check_primary_quality', 'assess_quality', primary, start, end)
+    offer('check_other_quality', 'assess_quality', other, start, end)
+    offer('check_primary_rr', 'get_rate_rhythm', primary, start, end)
+    if live_scoring and start-5 >= state['retained_window_s'][0]:
+        offer('check_shifted_primary', 'score_ecgfounder', primary, start-5, end-5)
+    return options
+
+
+def onset_supported(timeline, window):
+    """An onset can be corroborated by another lead or a consecutive window."""
+    start, end = window
+    current = {row['lead'] for row in timeline if row['window_s'] == [start, end]
+               and row['reference']['direction'] == 'support'}
+    if len(current) >= 2:
+        return True
+    previous = [2*start-end, start]
+    return any(row['lead'] in current and row['window_s'] == previous
+               and row['reference']['direction'] == 'support' for row in timeline)

@@ -13,10 +13,10 @@ from tests.runtime.test_staged_review import act, boundary
 
 
 class EndFollowupTests(unittest.TestCase):
-    def run_persistent_episode(self, observations, score_pairs, *, interrupt_at=None, adaptive=False):
+    def run_persistent_episode(self, observations, score_pairs, *, interrupt_at=None, adaptive=False, menu=False):
         cfg_path = fixture.ROOT/'configs/ecg/react_qwen_followup_close.json'
         config = dict(json.loads(cfg_path.read_text()), persistent_event_evidence=True,
-                      adaptive_acquisition=adaptive)
+                      adaptive_acquisition=adaptive or menu, evidence_menu=menu)
         with TemporaryDirectory() as tmp:
             cfg = Path(tmp)/'event_evidence.json'
             cfg.write_text(json.dumps(config))
@@ -81,6 +81,39 @@ class EndFollowupTests(unittest.TestCase):
         self.assertEqual(result['counts']['model_calls'], 5)
         self.assertEqual(result['intervals'], [[10,30]])
         self.assertEqual(updates[2]['event_update']['interval'], [10,30])
+
+    def test_evidence_menu_executes_only_the_chosen_unmeasured_lead(self):
+        actions = [
+            reply('select_evidence', dict(option='compare_current_leads', reason='check new high')),
+            reply('select_evidence', dict(option='finish', reason='corroborated')),
+            reply('assess_window', dict(finding='TARGET_PRESENT', evidence_ids=['E1','E2'], reason='both high')),
+            act('CONFIRM_EVENT', None), boundary('unlocalized'),
+        ]
+        result, _, _, steps, requests = self.run_persistent_episode(actions, [[.94,.05]], menu=True)
+        self.assertEqual(result['intervals'], [[0,10]])
+        self.assertEqual(result['counts']['model_calls'], 2)
+        choices = [json.loads(request['messages'][1]['content'])['options']
+                   for request in requests if request['tools'][0]['function']['name'] == 'select_evidence']
+        self.assertEqual(choices[0]['compare_current_leads']['lead'], 'ECG2')
+        self.assertNotIn('compare_current_leads', choices[1])
+        observed = [row['option'] for row in steps if row.get('phase') == 'select_evidence'
+                    and row['status'] == 'observed']
+        self.assertEqual(observed, ['compare_current_leads'])
+
+    def test_single_new_high_can_create_candidate_and_adjacent_high_can_confirm(self):
+        sample = [
+            reply('select_evidence', dict(option='finish', reason='use the primary measurement')),
+            reply('assess_window', dict(finding='TARGET_PRESENT', evidence_ids=['E1'], reason='high')),
+        ]
+        actions = sample + [act('CREATE_CANDIDATE', None), boundary('unlocalized')]
+        actions += sample + [act('CONFIRM_EVENT', 1), boundary('unlocalized')]
+        result, trace, _, _, requests = self.run_persistent_episode(actions, [[.94,.05],[.93,.06]], menu=True)
+        self.assertEqual([row['action'] for row in trace], ['CREATE_CANDIDATE','CONFIRM_EVENT'])
+        schemas = [request['tools'][0]['function']['parameters']['properties']['action']['enum']
+                   for request in requests if request['tools'][0]['function']['name'] == 'choose_event_action']
+        self.assertNotIn('CONFIRM_EVENT', schemas[0])
+        self.assertIn('CONFIRM_EVENT', schemas[1])
+        self.assertEqual(result['intervals'], [[0,20]])
 
     def test_paired_view_marks_only_opposite_cotimed_leads(self):
         from cardioagent.ecg_agent.harness.window_semantics import paired_observation_view

@@ -6,6 +6,7 @@ from time import perf_counter
 from . import measured_event, split_event, window_semantics
 from .autonomous_decision import overlap
 from .end_review import advance_end_memory, end_evidence
+from . import active_acquisition
 
 ASSESSMENTS = {'support':'SUPPORTS_TARGET', 'negative':'AGAINST_TARGET',
                'conflict':'UNCERTAIN', 'unavailable':'UNCERTAIN'}
@@ -133,7 +134,8 @@ def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode,
     return ask(model,counts,emit,audit,observation_data,tool,instruction,validate_observation)
 
 
-def choose_action(model, counts, emit, audit, window, obs, active, candidate, transition=None, followup=False):
+def choose_action(model, counts, emit, audit, window, obs, active, candidate, transition=None, followup=False,
+                  *, corroborated_onset=None):
     a,b = window
     entity = active or candidate
     ident = entity['event_id'] if entity else None
@@ -148,6 +150,8 @@ def choose_action(model, counts, emit, audit, window, obs, active, candidate, tr
             actions=[v for v in actions if v not in ('CREATE_CANDIDATE','CONFIRM_EVENT','CONTINUE_EVENT')]
         elif active:
             actions.remove('REQUEST_CLOSE')
+    if corroborated_onset is False and 'CONFIRM_EVENT' in actions:
+        actions.remove('CONFIRM_EVENT')
     def lifecycle(args):
         action=args['action']
         if action not in actions or args['event_id']!=ident or (ident is not None and type(args['event_id']) is not int):
@@ -175,7 +179,47 @@ def choose_action(model, counts, emit, audit, window, obs, active, candidate, tr
                         'continue the same event and withdraw the suspicion. If the contrary direction '
                         'persists, REQUEST_CLOSE lets you inspect and confirm the earlier boundary. '
                         'If the evidence remains ambiguous, hold the event.')
+    if corroborated_onset is not None and not active:
+        data['onset_corroborated'] = corroborated_onset
+        instruction += (' A first supportive reading can be registered as a candidate. To confirm the episode, '
+                        'seek corroboration from another lead now or from an adjacent observation on the same lead.')
     return ask(model,counts,emit,audit,data,tool,instruction,lifecycle)
+
+
+def acquire_from_menu(reviewer, state, session, call_window, emit, audit):
+    while len(session.calls) < session.max_calls:
+        options = active_acquisition.measurement_menu(state, session.calls, live_scoring=reviewer.live_scoring)
+        if not options:
+            return
+        # Summaries expose measured values and availability without repeating raw waveform proxies.
+        observations = [dict(tool=row['tool'], lead=row['lead'], window_s=row['window_s'],
+                             status=row['status'], fields=measured_event.numeric_fields(row))
+                        for row in session.calls]
+        pending = state.get('pending_question')
+        data = dict(window_s=state['window_s'], open_event=state['open_event'] is not None,
+                    candidate=state['candidate'] is not None, pending=pending and pending['question'],
+                    measurements=observations, options=options, remaining=session.max_calls-len(session.calls))
+        tool = schema('select_evidence', 'Choose an unmeasured observation or finish.',
+                      dict(option=choice([*options, 'finish']), reason=TEXT), ['option', 'reason'])
+
+        def select(args):
+            if args['option'] not in options and args['option'] != 'finish':
+                raise ValueError('Choose one offered option')
+            return args
+
+        selected = ask(reviewer.model, reviewer.counts, emit, audit, data, tool,
+                       'Take the option that would most change your next event decision. For a possible onset or end, '
+                       'compare the unmeasured lead on the current interval first if it can corroborate or contradict '
+                       'the change. A single high score can create a candidate only. A signal quality check can help '
+                       'identify an artifact. A shifted score is useful near a boundary, but can share samples with '
+                       'another measurement. Finish if the current measurements already answer the question.', select)
+        if selected.get('status') == 'error' or selected['option'] == 'finish':
+            return
+        args = options[selected['option']].copy()
+        name = args.pop('tool')
+        row = call_window(name, args, trigger_reason='adaptive_selected')
+        emit('llm_steps', dict(audit, phase='select_evidence', status='observed', action=name,
+                               arguments=args, option=selected['option'], evidence_id=row['evidence_id']))
 
 
 def transition_context(data, profile):
@@ -253,7 +297,11 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
     if followup and active:
         transition['end_evidence'] = proof if memory is not None else end_evidence(
             transition['rhythm_by_time'], [a,b], active)
-    intent = (choose_action(reviewer.model, reviewer.counts, emit, audit, [a,b], obs, active, candidate, transition, followup)
+    corroborated = None
+    if reviewer.evidence_menu and not active:
+        corroborated = active_acquisition.onset_supported(transition['rhythm_by_time'], [a,b])
+    intent = (choose_action(reviewer.model, reviewer.counts, emit, audit, [a,b], obs, active, candidate, transition, followup,
+                            corroborated_onset=corroborated)
               if stable is None else dict(status='accepted', action=stable[1], event_id=active['event_id'] if active else None,
                                           reason=obs['reason']))
     emit('llm_steps',dict(audit,stage='lifecycle',status='lifecycle_result',intent=intent))
@@ -314,8 +362,9 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
         props=dict(status=choice(['unlocalized','located']),before_id=TEXT,after_id=TEXT,reason=TEXT)
         tool=schema('refine_boundary','Name ordered measurements on opposite sides or leave the boundary unlocalized.',
                     props,['status','reason'])
-        extras=[t for t in tools if t['function']['name'] in split_event.TOOL_GUIDE and
-                len(session.calls)<session.max_calls]
+        extras = [] if reviewer.evidence_menu else [
+            t for t in tools if t['function']['name'] in split_event.TOOL_GUIDE and len(session.calls)<session.max_calls
+        ]
         def measure(name,args):
             parsed=session.registry._tools[name].arguments.model_validate(args)
             if not session.context.origin_s<=parsed.start_s<parsed.end_s<=b:

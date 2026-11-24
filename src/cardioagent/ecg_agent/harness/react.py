@@ -175,7 +175,8 @@ class ReActReview:
                  compact_final_evidence=True, split_event_review=False, measured_event_review=False, staged_event_review=False,
                  window_assessment_mode='legacy', window_band_profile=None, end_range_prompt=False,
                  confirm_end_with_followup=False, compare_rhythm_leads=False, bound_window_choices=False,
-                 direction_only_reference=False, persistent_event_evidence=False, adaptive_acquisition=False):
+                 direction_only_reference=False, persistent_event_evidence=False, adaptive_acquisition=False,
+                 evidence_menu=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -228,6 +229,9 @@ class ReActReview:
         ):
             raise ValueError('Adaptive acquisition requires fixed review with persistent staged evidence')
         self.adaptive_acquisition = adaptive_acquisition
+        if type(evidence_menu) is not bool or (evidence_menu and not adaptive_acquisition):
+            raise ValueError('The evidence menu requires adaptive acquisition')
+        self.evidence_menu = evidence_menu
         self.staged_event_review = staged_event_review
         self.measured_event_review = measured_event_review or staged_event_review
         self.split_event_review = split_event_review or self.measured_event_review
@@ -464,6 +468,9 @@ class ReActReview:
         else:
             state, messages, tools, finish_schema, final_schema = self._legacy_context(
                 session, tracker, identity, start, end, primary, primary_lead, secondary, call_window, allowed)
+        if self.evidence_menu and stable is None:
+            staged_review.acquire_from_menu(
+                self, state, session, call_window, emit, dict(identity, cursor_s=end, step=0))
         visible_history = {key for window in self.history for key in window.get('evidence_ids', [])}
         retained_citations = visible_history if self.memory_write else set()
         retrieved_ids = set()
@@ -478,7 +485,7 @@ class ReActReview:
                                  and r['available_at_s'] <= end}
         stop = 'round_limit'
         failed = False
-        measurement_done = stable is not None
+        measurement_done = stable is not None or self.evidence_menu
         acquisition_errors = 0
         acquisition_failed = False
         decision_retries = 0
