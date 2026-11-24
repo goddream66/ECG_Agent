@@ -1,5 +1,10 @@
 from unittest import TestCase
+from tempfile import TemporaryDirectory
+from pathlib import Path
+import gzip
+import json
 import numpy as np
+from cardioagent.ecg_agent.llm.recording import RecordingChatModel
 from cardioagent.ecg_agent.experiments.interruption_review import review
 from cardioagent.ecg_agent.experiments.subwindow_change import measure_lead
 from tests.runtime.test_brief_review import Model
@@ -28,3 +33,12 @@ class InterruptionTest(TestCase):
         self.assertEqual(measure_lead(np.zeros(3840),128),[None]*5)
         with self.assertRaises(ValueError):
             measure_lead(np.zeros(3841),128)
+
+    def test_real_call_logger_records_cursor(self):
+        model=Model([reply('submit_interruption_review',dict(action='NO_FLAG',cell='none',reason='stable'))])
+        with TemporaryDirectory() as tmp:
+            log=Path(tmp)/'calls.jsonl.gz'
+            res=review(self.case,RecordingChatModel(model,log),None,lambda *args:None,'aligned')
+            self.assertEqual(res['decision']['status'],'accepted')
+            with gzip.open(log,'rt') as stream:
+                self.assertEqual(json.load(stream)['cursor_s'],30)

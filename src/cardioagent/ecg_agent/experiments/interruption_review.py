@@ -38,7 +38,7 @@ def review(item, model, measure, emit, mode):
                 (args['action']=='FLAG_INTERVAL') != (args['cell']!='none')):
             raise ValueError('Name one cell only when flagging a possible interruption')
         return dict(status='accepted',**args)
-    context=dict(cursor_s=now, founder_windows=item['scores'],cells_s=[[now-10+2*i,now-8+2*i] for i in range(5)])
+    context=dict(window_s=[now-10,now],cursor_s=now, founder_windows=item['scores'],cells_s=[[now-10+2*i,now-8+2*i] for i in range(5)])
     if mode=='all':
         context['measured_beats']=inspect('measure_beat_change',{})
     counts=Counter()
