@@ -89,6 +89,7 @@ def build_chat_model(config):
     c.pop('measured_event_review', None)
     c.pop('staged_event_review', None)
     c.pop('selective_lifecycle', None)
+    c.pop('chronological_history_ids', None)
     c.pop('window_assessment_mode', None)
     c.pop('window_band_profile', None)
     c.pop('separate_final_decision', None)

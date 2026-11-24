@@ -178,7 +178,7 @@ class ReActReview:
                  direction_only_reference=False, persistent_event_evidence=False, adaptive_acquisition=False,
                  evidence_menu=False, focused_evidence_menu=False, boundary_pair_menu=False,
                  advisory_reference=False, compact_history=False, accepted_support_memory=False,
-                 selective_lifecycle=False):
+                 selective_lifecycle=False, chronological_history_ids=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -258,6 +258,10 @@ class ReActReview:
                 persistent_event_evidence)):
             raise ValueError('Selective lifecycle requires fixed staged follow-up and persistent event evidence')
         self.selective_lifecycle = selective_lifecycle
+        if type(chronological_history_ids) is not bool or (chronological_history_ids and not (
+                event_review_mode and (staged_event_review or measured_event_review))):
+            raise ValueError('Chronological evidence labels require measured event review')
+        self.chronological_history_ids = chronological_history_ids
         self.staged_event_review = staged_event_review
         self.measured_event_review = measured_event_review or staged_event_review
         self.split_event_review = split_event_review or self.measured_event_review
@@ -533,9 +537,12 @@ class ReActReview:
             if final_phase and not final_context_added:
                 aliases = {f'E{i}': row['evidence_id'] for i, row in enumerate(session.calls, 1)}
                 if self.measured_event_review:
-                    history_keys = sorted(key for key in visible_history if ledger.get(key)['tool'] == 'score_ecgfounder')
-                    historical = dict.fromkeys(history_keys + sorted(retrieved_ids))
                     current_ids = set(aliases.values())
+                    history_keys = {key for key in visible_history if ledger.get(key)['tool'] == 'score_ecgfounder'}
+                    if self.chronological_history_ids:
+                        historical = ledger.presentation_order((history_keys | retrieved_ids)-current_ids)
+                    else:
+                        historical = dict.fromkeys(sorted(history_keys) + sorted(retrieved_ids))
                     aliases.update({f'H{i}': key for i, key in enumerate(historical, 1) if key not in current_ids})
                     if self.staged_event_review:
                         state['recent_window_votes'] = {}

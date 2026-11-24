@@ -13,6 +13,7 @@ class EvidenceLedger:
     def __init__(self, context):
         self.context = context
         self._items = {}
+        self._receipt_order = {}
 
     def append(self, result, *, source_evidence_id=None, input_fingerprint=None):
         key = result['evidence_id']
@@ -24,6 +25,7 @@ class EvidenceLedger:
                     record_id=self.context.record_id, manifest_id=self.context.manifest_id,
                     observed_at_s=result['available_at_s'], source_evidence_id=source_evidence_id,
                     input_fingerprint=input_fingerprint, anatomical_lead='unknown')
+        self._receipt_order[key] = len(self._items)
         self._items[key] = item
         return deepcopy(item)
 
@@ -37,6 +39,14 @@ class EvidenceLedger:
 
     def get(self, key):
         return deepcopy(self._items[key])
+
+    def presentation_order(self, keys):
+        """Order visible receipts without using namespaced hashes as semantic input."""
+        def coordinates(key):
+            row = self._items[key]
+            window = row['window_s'] or (float('inf'), float('inf'))
+            return (*window, row['lead'] or '', row['tool'], row['available_at_s'], self._receipt_order[key])
+        return sorted(keys,key=coordinates)
 
     def retrieve(self, start_s, end_s, *, available_through_s, limit, lead=None, tool=None):
         """Return the newest acquired evidence overlapping a half-open time interval."""
