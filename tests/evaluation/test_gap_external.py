@@ -7,7 +7,7 @@ import numpy as np
 import wfdb
 
 from cardioagent.ecg_agent.experiments.gap_external import SOURCE_FS, live_repair
-from cardioagent.ecg_agent.experiments.ltafdb_adaptive_pilot import continuous_sections, select_clips
+from cardioagent.ecg_agent.experiments.ltafdb_adaptive_pilot import continuous_sections, select_clips, transition_sections
 from cardioagent.ecg_agent.experiments.runner import run_job, validate_dataset
 from cardioagent.ecg_agent.data.offline import cache_manifest, write_record
 from cardioagent.ecg_agent.harness.historical_window import HistoricalWindow
@@ -16,6 +16,30 @@ from cardioagent.ecg_agent.schemas import EvidenceContext
 
 
 class GapExternalTest(TestCase):
+    def test_transition_grid_is_reproducible_disjoint_and_blind_to_the_runtime(self):
+        names = ('short', 'long', 'persistent', 'empty', 'previous')
+        tasks = {name: dict(record_id=name, start_s=0, end_s=2400) for name in names}
+        validity = {name: {'valid_intervals': [[220, 2190]]} for name in names}
+        annotations = {'short': [[345, 356], [955, 970], [1627, 1649]],
+                       'long': [[400, 530], [1111, 1235], [1687, 1820]],
+                       'persistent': [[0, 2400]], 'empty': [], 'previous': [[0, 2400]]}
+        refs = {name: dict(intervals=intervals) for name, intervals in annotations.items()}
+        sections = transition_sections(tasks, refs, validity, {'previous'}, per_stratum=1)
+        self.assertEqual(sections, transition_sections(dict(reversed(tasks.items())), refs, validity,
+                                                       {'previous'}, per_stratum=1))
+        self.assertEqual([name for name, _, _ in sections], ['short', 'long', 'persistent', 'empty'])
+        for key, task, kind in sections:
+            a, b = task['start_s'], task['end_s']
+            self.assertEqual((a % 10, b - a), (0, 300))
+            self.assertTrue(220 <= a < b <= 2190)
+            self.assertEqual(set(task), {'task_id', 'record_id', 'source_database', 'start_s', 'end_s'})
+            if kind == 'short_inside':
+                self.assertTrue(any(a < x < y < b for x, y in annotations[key]))
+            elif kind == 'long_end_inside':
+                self.assertTrue(any(a < y < b for x, y in annotations[key]))
+        with self.assertRaisesRegex(ValueError, 'eligible new records'):
+            transition_sections(tasks, refs, validity, {'short', 'previous'}, per_stratum=1)
+
     def test_continuous_replay_excludes_prior_records_and_samples_only_valid_aligned_time(self):
         tasks = {name:dict(record_id=name,start_s=5,end_s=3510) for name in ('a','b','c','d','e','f')}
         valid = {name:dict(valid_intervals=[[1,121],[132,1749],[1901,3499]]) for name in tasks}

@@ -21,6 +21,8 @@ WINDOW_S = 120
 STRATA = ('short_event', 'event_end', 'background')
 SELECTION_SEED = 'cardioagent-ltafdb-adaptive-20261124-v1'
 CONTINUOUS_SEED = 'cardioagent-ltafdb-continuous-20261124-v1'
+TRANSITION_SEED = 'cardioagent-ltafdb-grid-transition-20261124-v1'
+TRANSITION_STRATA = ('short_inside', 'long_end_inside', 'persistent_target', 'target_absent')
 
 
 def record_candidates(task, intervals, valid):
@@ -108,7 +110,56 @@ def continuous_sections(tasks, validity, excluded, count=4, seconds=1200):
                        start_s=start, end_s=start+seconds)) for _, name, start, key in chosen]
 
 
-def prepare(source, output, *, exclude_selection=None):
+def transition_sections(tasks, references, validity, excluded, per_stratum=2, seconds=300):
+    """Select evaluation blocks on a pre-aligned grid, retaining every reference in each block."""
+    def rank(*parts):
+        return sha256(':'.join((TRANSITION_SEED, *parts)).encode()).digest()
+
+    candidates = {kind: [] for kind in TRANSITION_STRATA}
+    for key, task in tasks.items():
+        name = task['record_id']
+        if name in excluded:
+            continue
+        intervals = references[key]['intervals']
+        offset = 10 * (int.from_bytes(rank(name, 'grid'), 'big') % (seconds // 10))
+        for left, right in validity[name]['valid_intervals']:
+            first = offset + seconds * ceil((max(left, task['start_s']) - offset) / seconds)
+            limit = floor(min(right, task['end_s']))
+            for a in range(first, limit - seconds + 1, seconds):
+                b = a + seconds
+                inside = [(x, y) for x, y in intervals if x < b and a < y]
+                if any(a < x < y < b and 5 <= y - x < 30 for x, y in inside):
+                    kind = 'short_inside'
+                elif any(a < y < b and y - x >= 60 for x, y in inside):
+                    kind = 'long_end_inside'
+                elif any(x <= a < b <= y for x, y in inside):
+                    kind = 'persistent_target'
+                elif not inside:
+                    kind = 'target_absent'
+                else:
+                    continue
+                candidates[kind].append((rank(kind, name), rank(kind, name, str(a)), name, key, a))
+    chosen, used = [], set()
+    for kind in TRANSITION_STRATA:
+        count = 0
+        for _, _, name, key, a in sorted(candidates[kind]):
+            if name in used:
+                continue
+            task = dict(task_id=f'ltafdb-adaptive-{name}', record_id=name, source_database='ltafdb',
+                        start_s=a, end_s=a + seconds)
+            chosen.append((key, task, kind))
+            used.add(name)
+            count += 1
+            if count == per_stratum:
+                break
+        if count != per_stratum:
+            raise ValueError(f'Only {count} eligible new records in stratum {kind}')
+    return chosen
+
+
+def prepare(source, output, *, exclude_selection=None, transition_exclusion=None):
+    if transition_exclusion is not None and exclude_selection is None:
+        raise ValueError('Both prior selection files are required for the transition panel')
     manifest = json.loads((source / 'manifest.json').read_bytes())
     for file, field in [('tasks.jsonl', 'tasks_sha256'), ('references.jsonl', 'references_sha256')]:
         if digest(source / file) != manifest[field]:
@@ -128,17 +179,24 @@ def prepare(source, output, *, exclude_selection=None):
     if exclude_selection is None:
         clips = select_clips(tasks, references, validity)
     else:
-        prior = json.loads(exclude_selection.read_bytes())
-        if prior['source_manifest_sha256'] != digest(source/'manifest.json'):
-            raise ValueError('The prior selection must refer to the same source')
-        excluded = {row['record_id'] for row in prior['clips']}
+        for path in (exclude_selection, transition_exclusion):
+            if path is None:
+                continue
+            prior = json.loads(path.read_bytes())
+            if prior['source_manifest_sha256'] != digest(source/'manifest.json'):
+                raise ValueError('The prior selection must refer to the same source')
+            excluded.update(row['record_id'] for row in prior['clips'])
+        if transition_exclusion is None:
+            sections = [(key, task, 'continuous') for key, task in continuous_sections(tasks, validity, excluded)]
+        else:
+            sections = transition_sections(tasks, references, validity, excluded)
         clips = []
-        for key, task in continuous_sections(tasks, validity, excluded):
+        for key, task, stratum in sections:
             a, b = task['start_s'], task['end_s']
             events = intersection(references[key]['intervals'], [[a,b]])
             reference = dict(task_id=task['task_id'], start_s=a, end_s=b, intervals=events,
                              burden=union_seconds(events)/(b-a), tau=.5, burden_floor=.02)
-            clips.append((task, reference, 'continuous', key))
+            clips.append((task, reference, stratum, key))
     if output.exists():
         raise FileExistsError(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -165,6 +223,9 @@ def prepare(source, output, *, exclude_selection=None):
         protocol = (dict(seed=CONTINUOUS_SEED, seconds_per_clip=1200, exclusion_sha256=digest(exclude_selection),
                          excluded_records=sorted(excluded)) if exclude_selection is not None
                     else dict(seed=SELECTION_SEED, seconds_per_clip=WINDOW_S))
+        if transition_exclusion is not None:
+            protocol.update(seed=TRANSITION_SEED, seconds_per_clip=300,
+                            second_exclusion_sha256=digest(transition_exclusion))
         save_json(evaluation / 'selection.json', dict(
             **protocol, clips=selection,
             source_manifest_sha256=digest(source / 'manifest.json'),
@@ -201,6 +262,8 @@ def main():
     build.add_argument('--source', required=True, type=Path)
     build.add_argument('--output', required=True, type=Path)
     build.add_argument('--exclude-selection', type=Path, help='Draw continuous segments on other records.')
+    build.add_argument('--transition-exclusion', type=Path,
+                       help='Exclude an additional previous panel and evaluate strata on a fixed time grid.')
     baseline = sub.add_parser('baseline')
     baseline.add_argument('--cache', required=True, type=Path)
     baseline.add_argument('--task', required=True, type=Path)
@@ -209,7 +272,10 @@ def main():
     baseline.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     if args.action == 'prepare':
-        prepare(args.source, args.output, exclude_selection=args.exclude_selection)
+        if args.transition_exclusion is not None and args.exclude_selection is None:
+            parser.error('--transition-exclusion needs the original --exclude-selection as well')
+        prepare(args.source, args.output, exclude_selection=args.exclude_selection,
+                transition_exclusion=args.transition_exclusion)
     else:
         score_baseline(args.cache, args.task, args.models, args.device, args.output)
 
