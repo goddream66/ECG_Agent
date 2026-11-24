@@ -53,6 +53,24 @@ class WindowSemanticsTests(unittest.TestCase):
         self.assertEqual([r['fields']['target_score'] for r in a[0]['rhythm_measurements_by_time']],[.08,.95])
         self.assertNotEqual(window_request(data,tool,'','union_raw'),window_request(flip,tool,'','union_raw'))
 
+    def test_mixed_citation_retry_identifies_each_current_lead_without_using_history(self):
+        from cardioagent.ecg_agent.harness.window_semantics import verify_band
+        bins = [dict(direction=v) for v in ('negative', 'indeterminate', 'support')]
+        profile = dict(edges=[0.2, 0.8], bins=dict(ECG1=bins, ECG2=bins))
+        def score(lead, value, window):
+            return dict(tool='score_ecgfounder', status='ok', direction_allowed=True,
+                        lead=lead, fields=dict(af_score=value, afl_score=0.1), window_s=window)
+        now = [10, 20]
+        rows = {'E1': score('ECG2', 0.89, now), 'E2': score('ECG1', 0.63, now),
+                'H1': score('ECG1', 0.12, [0, 10])}
+        with self.assertRaises(ValueError) as rejected:
+            verify_band(dict(interpretation='support', evidence_ids=['E1', 'E2', 'H1']), rows, now, profile)
+        self.assertIn('E1 (ECG2): support, E2 (ECG1): indeterminate', str(rejected.exception))
+        self.assertNotIn('H1', str(rejected.exception))
+        verify_band(dict(interpretation='support', evidence_ids=['E1']), rows, now, profile)
+        with self.assertRaisesRegex(ValueError, 'requires negative'):
+            verify_band(dict(interpretation='negative', evidence_ids=['E1']), rows, now, profile)
+
     def test_uncertain_window_can_investigate_but_only_grounded_pair_closes(self):
         from tests.runtime import test_autonomous_events as fixture
         from tests.runtime.test_react import reply

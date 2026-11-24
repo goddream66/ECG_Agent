@@ -212,10 +212,15 @@ def verify_band(observation, rows, window, profile):
     direction = observation['interpretation']
     if direction not in ('support', 'negative'):
         return
-    flags = [band(rows[k], profile)['direction'] for k in observation['evidence_ids']
-             if k in rows and current_founder(rows[k], window)]
-    if not flags or any(flag != direction for flag in flags):
-        raise ValueError('Each current Founder measurement cited as directional must match the finding. Use uncertainty if needed.')
+    flags = {k: band(rows[k], profile)['direction'] for k in observation['evidence_ids']
+             if k in rows and current_founder(rows[k], window)}
+    if not flags:
+        raise ValueError('Cite an arrived Founder measurement with a direction matching this finding.')
+    if any(flag != direction for flag in flags.values()):
+        directions = ', '.join(f'{key} ({rows[key]["lead"]}): {flag}' for key, flag in flags.items())
+        raise ValueError('Each current Founder measurement cited as directional must match the finding. '
+                         f'Your finding requires {direction}. Your cited measurements: {directions}. '
+                         'Cite only matching directional IDs. Explain other readings in reason, or abstain')
 
 
 def available_findings(rows, window, profile):
