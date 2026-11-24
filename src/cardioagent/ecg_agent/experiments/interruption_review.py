@@ -13,7 +13,7 @@ from cardioagent.ecg_agent.llm.providers import LocalQwenModel
 from .subwindow_change import FEATURES, measure_lead
 
 
-def review(item, model, measure, emit, mode, *, grounded=False):
+def review(item, model, measure, emit, mode, *, grounded=False, lead_history=False):
     now=item['cursor']
     if set(item)!={'record_id','cursor','scores'} or mode not in ('aligned','active','all'):
         raise ValueError('Unexpected review inputs')
@@ -56,6 +56,13 @@ def review(item, model, measure, emit, mode, *, grounded=False):
             raise ValueError('Name one cell only when flagging a possible interruption')
         return dict(status='accepted',**args)
     context=dict(window_s=[now-10,now],cursor_s=now, founder_windows=item['scores'],cells_s=[[now-10+2*i,now-8+2*i] for i in range(5)])
+    if lead_history:
+        if not grounded:
+            raise ValueError('The lead history comparison requires the grounded interface')
+        windows=context.pop('founder_windows')
+        context['founder_history_by_lead']={
+            lead:[dict(interval_s=[a,b],target_score=pair[i]) for a,b,pair in windows]
+            for i,lead in enumerate(('ECG1','ECG2'))}
     if mode=='all':
         context['measured_beats']=inspect('measure_beat_change',{})
     counts=Counter()
@@ -90,13 +97,15 @@ def main():
     p.add_argument('--mode',choices=('aligned','active','all'),required=True)
     p.add_argument('--revision',required=True)
     p.add_argument('--grounded',action='store_true')
+    p.add_argument('--lead-history',action='store_true')
     a=p.parse_args()
     import torch
     torch.set_num_threads(2)
     torch.set_num_interop_threads(1)
     rows=json.loads(a.input.read_bytes())
     a.output.mkdir(parents=True,exist_ok=True)
-    job=dict(revision=a.revision,input_sha256=digest(a.input),config_sha256=digest(a.config),mode=a.mode,grounded=a.grounded)
+    job=dict(revision=a.revision,input_sha256=digest(a.input),config_sha256=digest(a.config),mode=a.mode,
+             grounded=a.grounded,lead_history=a.lead_history)
     model=LocalQwenModel(dict(json.loads(a.config.read_bytes()),device='cuda:0'))
     for item in rows:
         name=item['record_id']; now=item['cursor']
@@ -116,7 +125,7 @@ def main():
         log=a.output/f'{key}.{time_ns()}.jsonl.gz'
         start=perf_counter(); steps=[]
         result=review(item,RecordingChatModel(model,log),measure,lambda tag,row:steps.append([tag,row]),a.mode,
-                      grounded=a.grounded)
+                      grounded=a.grounded,lead_history=a.lead_history)
         tmp=path.with_suffix('.partial')
         save_json(tmp,dict(key=key,job=job,result=result,steps=steps,log=log.name,log_sha256=digest(log),wall_s=perf_counter()-start))
         tmp.replace(path)

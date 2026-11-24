@@ -58,3 +58,13 @@ class InterruptionTest(TestCase):
         self.assertIn('FLAG_CELL_2',opts(1))
         self.assertNotIn('FLAG_CELL_1',opts(1))
         self.assertEqual(result['decision']['cell'],'2')
+
+    def test_named_history_preserves_lead_time_and_missing_cells(self):
+        item=dict(self.case,scores=[[10,20,[.88,None]],[20,30,[.66,.1]]])
+        model=Model([reply('submit_interruption_review',dict(action='NO_FLAG',reason='No transition established.'))])
+        review(item,model,None,lambda *args:None,'aligned',grounded=True,lead_history=True)
+        view=json.loads(model.requests[0][0][1]['content'])
+        history=view['founder_history_by_lead']
+        self.assertNotIn('founder_windows',view)
+        self.assertEqual([[r['interval_s'][0],r['interval_s'][1],[r['target_score'],s['target_score']]]
+                          for r,s in zip(history['ECG1'],history['ECG2'])],item['scores'])
