@@ -8,6 +8,7 @@ from .autonomous_decision import overlap
 from .end_review import advance_end_memory, end_evidence
 from . import active_acquisition
 from .boundary_pairs import onset_pairs
+from .compact_history import TABLE_GUIDE, table_view
 
 ASSESSMENTS = {'support':'SUPPORTS_TARGET', 'negative':'AGAINST_TARGET',
                'conflict':'UNCERTAIN', 'unavailable':'UNCERTAIN'}
@@ -25,8 +26,13 @@ def choice(values):
     return dict(type='string',enum=list(values))
 
 
-def ask(model, counts, emit, audit, data, tool, instruction, validate, extras=(), measure=None):
+def ask(model, counts, emit, audit, data, tool, instruction, validate, extras=(), measure=None, *, compact_history=False):
     name = tool['function']['name']
+    if compact_history:
+        view = table_view(data)
+        if any(view[key] is not value for key, value in data.items()):
+            data = view
+            instruction += TABLE_GUIDE
     messages=[dict(role='system',content=SYSTEM+' '+instruction),
               dict(role='user',content=json.dumps(data,allow_nan=False))]
     failures=0
@@ -77,7 +83,7 @@ def ask(model, counts, emit, audit, data, tool, instruction, validate, extras=()
 
 
 def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode, profile=None, compare_leads=False,
-           bound_choices=False, direction_only=False, *, advisory_reference=False):
+           bound_choices=False, direction_only=False, *, advisory_reference=False, compact_history=False):
     rows = {r['id']:r for r in data['measurements']}
     a,b = data['window_s']
     def interpret(args):
@@ -151,11 +157,11 @@ def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode,
             else:
                 window_semantics.verify_band(canonical, rows, data['window_s'], profile)
         return observation
-    return ask(model,counts,emit,audit,observation_data,tool,instruction,validate_observation)
+    return ask(model,counts,emit,audit,observation_data,tool,instruction,validate_observation,compact_history=compact_history)
 
 
 def choose_action(model, counts, emit, audit, window, obs, active, candidate, transition=None, followup=False,
-                  *, corroborated_onset=None):
+                  *, corroborated_onset=None, compact_history=False):
     a,b = window
     entity = active or candidate
     ident = entity['event_id'] if entity else None
@@ -203,7 +209,7 @@ def choose_action(model, counts, emit, audit, window, obs, active, candidate, tr
         data['onset_corroborated'] = corroborated_onset
         instruction += (' A first supportive reading can be registered as a candidate. To confirm the episode, '
                         'seek corroboration from another lead now or from an adjacent observation on the same lead.')
-    return ask(model,counts,emit,audit,data,tool,instruction,lifecycle)
+    return ask(model,counts,emit,audit,data,tool,instruction,lifecycle,compact_history=compact_history)
 
 
 def acquire_from_menu(reviewer, state, session, call_window, emit, audit):
@@ -356,7 +362,7 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
                      lambda key: ledger.get(aliases[key])['available_at_s'] <= b,
                      getattr(reviewer, 'window_assessment_mode', 'legacy'), getattr(reviewer, 'window_band_profile', None),
                      reviewer.compare_rhythm_leads, reviewer.bound_window_choices, reviewer.direction_only_reference,
-                     advisory_reference=reviewer.advisory_reference)
+                     advisory_reference=reviewer.advisory_reference, compact_history=reviewer.compact_history)
     else:
         direction, _ = stable
         key = state['already_acquired_evidence'][0]['evidence_id']
@@ -384,7 +390,7 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
         corroborated = (obs.get('support_basis') == 'paired_advisory_reference'
                         or active_acquisition.onset_supported(transition['rhythm_by_time'], [a,b]))
     intent = (choose_action(reviewer.model, reviewer.counts, emit, audit, [a,b], obs, active, candidate, transition, followup,
-                            corroborated_onset=corroborated)
+                            corroborated_onset=corroborated, compact_history=reviewer.compact_history)
               if stable is None else dict(status='accepted', action=stable[1], event_id=active['event_id'] if active else None,
                                           reason=obs['reason']))
     emit('llm_steps',dict(audit,stage='lifecycle',status='lifecycle_result',intent=intent))
@@ -414,7 +420,8 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
                            'interval, first contrary interval and later confirmation. Confirm if these '
                            'measurements support a sustained change. WAIT if recovery, poor reliability '
                            'or conflicting evidence makes the change doubtful. Confirmation time is now; '
-                           'the boundary uses the earlier change, even when the exact second is unknown.',confirm)
+                           'the boundary uses the earlier change, even when the exact second is unknown.',confirm,
+                           compact_history=reviewer.compact_history)
         else:
             refinement=dict(status='unlocalized',reason='No current pair of successive contrary intervals after observed support.')
     elif reviewer.boundary_pair_menu and action in ('CREATE_CANDIDATE','CONFIRM_EVENT','REFINE_ONSET'):
