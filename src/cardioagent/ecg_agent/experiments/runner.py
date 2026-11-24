@@ -109,6 +109,7 @@ def run_job(job):
                     adaptive_acquisition=job['llm'].get('adaptive_acquisition',False),
                     evidence_menu=job['llm'].get('evidence_menu',False),
                     focused_evidence_menu=job['llm'].get('focused_evidence_menu',False),
+                    boundary_pair_menu=job['llm'].get('boundary_pair_menu',False),
                     compact_final_evidence=job['llm'].get('compact_final_evidence', True),
                     memory_write=job['llm'].get('memory_write', False),
                     memory_retrieve=job['llm'].get('memory_retrieve', False),

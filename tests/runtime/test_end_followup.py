@@ -14,11 +14,12 @@ from tests.runtime.test_staged_review import act, boundary
 
 class EndFollowupTests(unittest.TestCase):
     def run_persistent_episode(self, observations, score_pairs, *, interrupt_at=None, adaptive=False, menu=False,
-                               focused=False):
+                               focused=False, pairs=False):
         cfg_path = fixture.ROOT/'configs/ecg/react_qwen_followup_close.json'
         config = dict(json.loads(cfg_path.read_text()), persistent_event_evidence=True,
-                      adaptive_acquisition=adaptive or menu or focused, evidence_menu=menu or focused,
-                      focused_evidence_menu=focused)
+                      adaptive_acquisition=adaptive or menu or focused or pairs,
+                      evidence_menu=menu or focused or pairs, focused_evidence_menu=focused or pairs,
+                      boundary_pair_menu=pairs)
         with TemporaryDirectory() as tmp:
             cfg = Path(tmp)/'event_evidence.json'
             cfg.write_text(json.dumps(config))
@@ -127,6 +128,41 @@ class EndFollowupTests(unittest.TestCase):
         self.assertTrue(result['events'][0]['right_censored'])
         self.assertIsNone(result['events'][0]['end_decided_at_s'])
         self.assertIsNone(updates[-1]['event_update'])
+
+    def test_onset_menu_prefers_nonoverlapping_shifted_pair_and_filters_conflicts(self):
+        from cardioagent.ecg_agent.harness.boundary_pairs import onset_pairs
+
+        def evidence(key, a, b, direction, score, lead='ECG1'):
+            return dict(id=key, window_s=[a,b], lead=lead, target_score=score,
+                        reference={'direction': direction})
+        samples = [
+            evidence('left',0,10,'negative',.15),
+            evidence('shifted_left',5,15,'negative',.12),
+            evidence('other_left',10,20,'negative',.1,'ECG2'),
+            evidence('conflicting_left',10,20,'support',.9),
+            evidence('shifted_right',15,25,'support',.95),
+            evidence('right',20,30,'support',.91),
+            evidence('future',25,35,'support',.99),
+        ]
+        options = onset_pairs(samples, [20,30], 0)
+        self.assertEqual(options['pair_1']['range_s'], [5,25])
+        offered = {row[side]['id'] for row in options.values() for side in ('before', 'after')}
+        self.assertTrue({'shifted_left','shifted_right'} <= offered)
+        self.assertFalse({'conflicting_left','other_left','future'} & offered)
+
+    def test_onset_choice_preserves_window_evidence_and_model_authority(self):
+        actions = [
+            reply('select_evidence', dict(option='compare_current_leads', reason='check new high')),
+            reply('assess_window', dict(finding='TARGET_PRESENT', evidence_ids=['E1','E2'], reason='both high')),
+            act('CONFIRM_EVENT', None),
+            reply('select_onset_boundary', dict(option='pair_1', reason='negative then positive')),
+        ]
+        result, trace, _, _, requests = self.run_persistent_episode(actions, [[.12,.04],[.94,.05]], pairs=True)
+        self.assertEqual(result['intervals'], [[10,20]])
+        refinement = trace[-1]['llm_action']['refinement']
+        self.assertEqual(refinement['boundary']['range_s'], [0,20])
+        self.assertNotEqual(refinement['before_id'], refinement['after_id'])
+        self.assertEqual(len(requests), 4)
 
 
     def test_single_new_high_can_create_candidate_and_adjacent_high_can_confirm(self):

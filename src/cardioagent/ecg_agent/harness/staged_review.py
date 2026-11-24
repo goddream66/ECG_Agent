@@ -7,6 +7,7 @@ from . import measured_event, split_event, window_semantics
 from .autonomous_decision import overlap
 from .end_review import advance_end_memory, end_evidence
 from . import active_acquisition
+from .boundary_pairs import onset_pairs
 
 ASSESSMENTS = {'support':'SUPPORTS_TARGET', 'negative':'AGAINST_TARGET',
                'conflict':'UNCERTAIN', 'unavailable':'UNCERTAIN'}
@@ -273,6 +274,35 @@ def retain_end_evidence(state, transition, aliases, ledger):
     return memory, dict(proof, can_confirm=bool(proof['later_against']))
 
 
+def localize_onset(reviewer, state, transition, aliases, emit, audit):
+    active = state['open_event']
+    causal = [row for row in transition['rhythm_by_time'] if row['id'] in aliases]
+    options = onset_pairs(causal, state['window_s'], state['last_closed_end_s'],
+                          active['confirmed_at_s'] if active else None)
+    if not options:
+        return dict(status='unlocalized', reason='No arrived measurements bracket the onset.')
+    tool = schema('select_onset_boundary', 'Select a measured onset bracket or leave it unlocalized.',
+                  dict(option=choice([*options, 'unlocalized']), reason=TEXT), ['option', 'reason'])
+
+    def select(args):
+        option, reason = args['option'], args['reason']
+        if option == 'unlocalized':
+            return dict(status='unlocalized', reason=reason)
+        if option not in options:
+            raise ValueError('Select a displayed event bracket')
+        pair = options[option]
+        return dict(status='located', boundary=dict(kind='bracketed', range_s=pair['range_s']),
+                    before_id=aliases[pair['before']['id']], after_id=aliases[pair['after']['id']], reason=reason)
+
+    return ask(reviewer.model, reviewer.counts, emit, audit,
+               dict(window_s=state['window_s'], options=options), tool,
+               'Select the pair that best localizes the onset of AF or AFL. Each pair has non-overlapping '
+               'arrived support and contrary windows. A negative-before/positive-after pair on the same lead '
+               'spanning the clearest recent change can help localize onset. Check earlier competing evidence '
+               'and select unlocalized if the measured change does not localize this episode. '
+               'Only the bracket is grounded. Its midpoint is an estimate.', select)
+
+
 
 def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, tools, *, stable=None):
     data=json.loads(measured_event.final_context(state,aliases,ledger)[1]['content'])
@@ -347,6 +377,8 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
                            'the boundary uses the earlier change, even when the exact second is unknown.',confirm)
         else:
             refinement=dict(status='unlocalized',reason='No current pair of successive contrary intervals after observed support.')
+    elif reviewer.boundary_pair_menu and action in ('CREATE_CANDIDATE','CONFIRM_EVENT','REFINE_ONSET'):
+        refinement = localize_onset(reviewer, state, transition, aliases, emit, audit)
     elif action in ('CREATE_CANDIDATE','CONFIRM_EVENT','REFINE_ONSET','REQUEST_CLOSE'):
         def refine(args):
             if args['status']=='unlocalized':
