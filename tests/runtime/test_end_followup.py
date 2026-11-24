@@ -8,11 +8,34 @@ from cardioagent.ecg_agent.harness.end_review import end_evidence
 from tests.runtime import test_autonomous_events as fixture
 from tests.runtime.test_react import reply
 from tests.runtime.test_react import ScriptModel
-from cardioagent.ecg_agent.harness.staged_review import assess
+from cardioagent.ecg_agent.harness.staged_review import assess, retain_end_evidence
 from tests.runtime.test_staged_review import act, boundary
 
 
 class EndFollowupTests(unittest.TestCase):
+    def test_accepted_aligned_positive_survives_inconclusive_other_lead(self):
+        def step(a, directions, observation, prior=None, enabled=True):
+            span = [a,a+10]
+            rows = [dict(id=lead, lead=lead, window_s=span, target_score=score,
+                         reference=dict(direction=direction))
+                    for lead, (score,direction) in zip(('ECG1','ECG2'),directions)]
+            ids = {row['id']: f"{a}-{row['id']}" for row in rows}
+            ledger = dict.fromkeys(ids.values(), dict(available_at_s=a+10))
+            return retain_end_evidence(dict(window_s=span, end_review_memory=prior or {}),
+                dict(rhythm_by_time=rows), ids, ledger,
+                dict(interpretation=observation, directional_ids=[ids['ECG1']]), accepted_support_memory=enabled)
+
+        mixed = [(.9202,'support'),(.6240,'indeterminate')]
+        self.assertIsNone(step(0, mixed, 'support', enabled=False)[0]['support'])
+        self.assertIsNone(step(0, mixed, 'unavailable')[0]['support'])
+        self.assertIsNone(step(0, [mixed[0],(.32,'negative')], 'conflict')[0]['support'])
+        memory, _ = step(0, mixed, 'support')
+        self.assertEqual(memory['support']['evidence_id'], '0-ECG1')
+        lows = [(.1,'negative'),(.2,'negative')]
+        memory, proof = step(10, lows, 'negative', memory)
+        self.assertFalse(proof['can_confirm'])
+        _, proof = step(20, lows, 'negative', memory)
+        self.assertTrue(proof['can_confirm'])
     def run_persistent_episode(self, observations, score_pairs, *, interrupt_at=None, adaptive=False, menu=False,
                                focused=False, pairs=False, advisory=False):
         name = 'react_qwen_review_pilot.json' if advisory else 'react_qwen_followup_close.json'

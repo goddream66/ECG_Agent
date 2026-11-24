@@ -113,6 +113,7 @@ def run_job(job):
                     boundary_pair_menu=job['llm'].get('boundary_pair_menu',False),
                     advisory_reference=job['llm'].get('advisory_reference',False),
                     compact_history=job['llm'].get('compact_history',False),
+                    accepted_support_memory=job['llm'].get('accepted_support_memory',False),
                     compact_final_evidence=job['llm'].get('compact_final_evidence', True),
                     memory_write=job['llm'].get('memory_write', False),
                     memory_retrieve=job['llm'].get('memory_retrieve', False),

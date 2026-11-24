@@ -274,7 +274,7 @@ def transition_context(data, profile):
                 pending_question=data.get('pending_question'))
 
 
-def retain_end_evidence(state, transition, aliases, ledger, observation):
+def retain_end_evidence(state, transition, aliases, ledger, observation, *, accepted_support_memory=False):
     window = state['window_s']
     current = []
     for row in transition['rhythm_by_time']:
@@ -291,6 +291,14 @@ def retain_end_evidence(state, transition, aliases, ledger, observation):
             raise ValueError('Both arrived measurements must be present for an advisory support anchor')
         current = [dict(current[0], direction='support', basis='paired_advisory_reference',
                         measurements=current)]
+    elif accepted_support_memory and any(row['direction'] == 'support' for row in current):
+        # An inconclusive second lead cannot erase an accepted, cited first lead.
+        # A contrary co-timed lead or an abstention cannot create a new support anchor.
+        cited = observation['directional_ids']
+        if observation['interpretation'] == 'support' and all(row['direction'] != 'negative' for row in current):
+            current = [row for row in current if row['evidence_id'] in cited and row['direction'] == 'support']
+        else:
+            current = []
     memory = advance_end_memory(state.get('end_review_memory', {}), window, current)
     by_id = {key: alias for alias, key in aliases.items()}
     proof = {}
@@ -381,7 +389,8 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
     followup = reviewer.confirm_end_with_followup
     memory = None
     if reviewer.persistent_event_evidence:
-        memory, proof = retain_end_evidence(state, transition, aliases, ledger, obs)
+        memory, proof = retain_end_evidence(state, transition, aliases, ledger, obs,
+                                          accepted_support_memory=reviewer.accepted_support_memory)
     if followup and active:
         transition['end_evidence'] = proof if memory is not None else end_evidence(
             transition['rhythm_by_time'], [a,b], active)

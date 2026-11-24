@@ -177,7 +177,7 @@ class ReActReview:
                  confirm_end_with_followup=False, compare_rhythm_leads=False, bound_window_choices=False,
                  direction_only_reference=False, persistent_event_evidence=False, adaptive_acquisition=False,
                  evidence_menu=False, focused_evidence_menu=False, boundary_pair_menu=False,
-                 advisory_reference=False, compact_history=False):
+                 advisory_reference=False, compact_history=False, accepted_support_memory=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -248,6 +248,10 @@ class ReActReview:
         if type(compact_history) is not bool or (compact_history and not staged_event_review):
             raise ValueError('Compact measurement history requires staged event review')
         self.compact_history = compact_history
+        if type(accepted_support_memory) is not bool or (accepted_support_memory and not (
+                persistent_event_evidence and compare_rhythm_leads and bound_window_choices)):
+            raise ValueError('Accepted support memory requires persistent paired evidence and validated findings')
+        self.accepted_support_memory = accepted_support_memory
         self.staged_event_review = staged_event_review
         self.measured_event_review = measured_event_review or staged_event_review
         self.split_event_review = split_event_review or self.measured_event_review
