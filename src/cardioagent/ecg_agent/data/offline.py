@@ -94,6 +94,31 @@ def write_record(stem: Path, output: Path, duration_s: int | None, *, source_fs:
     }
 
 
+def cache_manifest(raw_root: Path, records: list[dict], dataset: str) -> dict:
+    return {
+        "schema_version": 1,
+        "profile": PROFILE,
+        "dataset": dataset,
+        "raw_root": str(raw_root),
+        "channels": list(CHANNELS),
+        "anatomical_leads": "unknown",
+        "output_rate_hz": TARGET_FS,
+        "output_units": "normalized",
+        "dtype": "float32",
+        "window_s": WINDOW_SECONDS,
+        "stride_s": WINDOW_SECONDS,
+        "bandpass_hz": list(BANDPASS_HZ),
+        "butterworth_design_order": FILTER_ORDER,
+        "filter": "sosfiltfilt_on_completed_window",
+        "normalization": "window_median_center_and_p95_absolute_deviation",
+        "normalization_scale_floor": SCALE_FLOOR,
+        "clip_range": [-CLIP_VALUE, CLIP_VALUE],
+        "flat_run_min_s": FLAT_SECONDS,
+        "span_coordinates": "absolute_source_sample_indices_half_open",
+        "records": records,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw-root", type=Path, default=DEFAULT_RAW_ROOT)
@@ -132,28 +157,7 @@ def main() -> None:
             report = write_record(raw_root / name, staging, args.duration_s)
             reports.append(report)
             print(f"{name}: {report['channel_windows_by_status']}", flush=True)
-        manifest = {
-            "schema_version": 1,
-            "profile": PROFILE,
-            "dataset": "AFDB",
-            "raw_root": str(raw_root),
-            "channels": list(CHANNELS),
-            "anatomical_leads": "unknown",
-            "output_rate_hz": TARGET_FS,
-            "output_units": "normalized",
-            "dtype": "float32",
-            "window_s": WINDOW_SECONDS,
-            "stride_s": WINDOW_SECONDS,
-            "bandpass_hz": list(BANDPASS_HZ),
-            "butterworth_design_order": FILTER_ORDER,
-            "filter": "sosfiltfilt_on_completed_window",
-            "normalization": "window_median_center_and_p95_absolute_deviation",
-            "normalization_scale_floor": SCALE_FLOOR,
-            "clip_range": [-CLIP_VALUE, CLIP_VALUE],
-            "flat_run_min_s": FLAT_SECONDS,
-            "span_coordinates": "absolute_source_sample_indices_half_open",
-            "records": reports,
-        }
+        manifest = cache_manifest(raw_root, reports, "AFDB")
         (staging / "manifest.json").write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8"
         )

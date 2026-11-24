@@ -18,6 +18,7 @@ from cardioagent.ecg_agent.memory.evidence import canonical_hash
 from cardioagent.ecg_agent.memory.events import EventConfig
 from cardioagent.ecg_agent.schemas import EvidenceContext
 from cardioagent.ecg_agent.agent import replay_event_record
+from cardioagent.ecg_agent.data.afdb import SOURCE_FS
 from cardioagent.ecg_agent.experiments.replay import fixed_evidence_record
 from cardioagent.ecg_agent.harness.logging import JsonLogs
 from cardioagent.common.io import read_jsonl, write_jsonl
@@ -134,6 +135,7 @@ def run_job(job):
                 result = replay_event_record(job['cache'], job['record'], job['task'], job['channel'],
                                              config, score, logs, context, policy=job['policy'],
                                              raw_root=job['raw_root'], reviewer=reviewer,
+                                             source_fs=job.get('source_fs', SOURCE_FS),
                                              **({'checkpoint': checkpoint} if checkpoint else {}))
         finally:
             logs.close()
@@ -209,6 +211,18 @@ def variants(mode, base=None):
 
 
 
+def validate_dataset(manifest, tasks, dataset):
+    source_fs = {'afdb': SOURCE_FS, 'ltafdb': 128}[dataset]
+    if manifest.get('dataset', 'AFDB').lower() != dataset:
+        raise ValueError(f'{dataset.upper()} cache required')
+    records = {record['record_id']: record for record in manifest['records']}
+    for task in tasks.values():
+        record = records.get(task['record_id'])
+        if task.get('source_database') != dataset or record is None or record['source_rate_hz'] != source_fs:
+            raise ValueError(f'{dataset.upper()} tasks/cache required')
+    return records, source_fs
+
+
 def run(args):
     execution, workers = execution_settings(args.mode, getattr(args, 'device', 'cpu'), args.workers)
     if workers != args.workers:
@@ -237,10 +251,10 @@ def run(args):
     if args.duration_s:
         tasks = {key: dict(task, end_s=min(task['end_s'], task['start_s'] + args.duration_s))
                  for key, task in tasks.items()}
-    records = {r['record_id']: r for r in manifest['records']}
-    for task in tasks.values():
-        if task.get('source_database') != 'afdb' or task['record_id'] not in records:
-            raise ValueError('AFDB tasks/cache required')
+    dataset = getattr(args, 'dataset', 'afdb')
+    if dataset == 'ltafdb' and args.mode == 'fixed':
+        raise ValueError('Frozen legacy traces are available for AFDB only')
+    records, source_fs = validate_dataset(manifest, tasks, dataset)
     args.output.mkdir(parents=True, exist_ok=True)
     provenance = {'mode': args.mode, 'cache_sha256': digest(args.cache / 'manifest.json'),
                   'tasks_sha256': digest(args.tasks), 'checkpoint_sha256': digest(args.models / '1_lead_ECGFounder.pth'),
@@ -258,6 +272,8 @@ def run(args):
                                      for p in (args.cache / f'{name}.npy', args.cache / f'{name}.windows.jsonl')},
                   'selection': list(tasks), 'duration_s': args.duration_s,
                   'variants': [(name, cfg.to_dict(), policy) for name, cfg, policy in selected_variants]}
+    if dataset != 'afdb':
+        provenance['dataset'] = dataset
     if llm_config is not None:
         from cardioagent.ecg_agent.harness.react import PROMPT, WINDOW_PROMPT
         from cardioagent.ecg_agent.harness.autonomous_decision import PROMPT_PATH
@@ -306,8 +322,10 @@ def run(args):
     else:
         from uuid import uuid4
         run_id = uuid4().hex
+        claims = ('AFDB exploratory development only' if dataset == 'afdb'
+                  else 'LTAFDB external evaluation under the supplied configuration')
         save_json(manifest_file, {'run_id': run_id, 'provenance': provenance,
-                                  'status': 'planned', 'claims': 'AFDB exploratory development only'})
+                                  'status': 'planned', 'claims': claims})
     manifest_id = canonical_hash(provenance)
     jobs = []
     for channel in args.channels:
@@ -322,6 +340,8 @@ def run(args):
                        'threads': args.threads, 'scores': str(args.scores),
                        'source_trace': str(args.output / f'frozen_traces/{channel}/{record["record_id"]}.jsonl')}
                 jobs.append(job)
+                if dataset != 'afdb':
+                    job['source_fs'] = source_fs
                 if policy == 'event-react':
                     job['llm'] = llm_config
     began = perf_counter()
@@ -360,6 +380,7 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=('live', 'cached', 'fixed'), required=True)
+    parser.add_argument('--dataset', choices=('afdb', 'ltafdb'), default='afdb')
     parser.add_argument('--cache', type=Path, default=default_inputs()['cache'])
     parser.add_argument('--tasks', type=Path, default=default_inputs()['tasks'])
     parser.add_argument('--scores', type=Path, default=default_inputs()['scores'])
