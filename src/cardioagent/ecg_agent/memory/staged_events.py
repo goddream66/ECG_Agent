@@ -77,6 +77,12 @@ class StagedEvents(AutonomousEvents):
             self.last_change=deepcopy(updated['event_update'])
         if self.active and 'end_review_memory' in payload:
             self.active['end_review_memory'] = deepcopy(payload['end_review_memory'])
+            if action == 'CONFIRM_EVENT' and payload.get('supported_tail_export'):
+                last = max(min(end, right) for _, right in payload['support_intervals'])
+                self.active['published_through_s'] = last
+                self.active['supported_tail_export'] = True
+                updated['event_update']['interval'][1] = last
+                self.last_change = deepcopy(updated['event_update'])
             if action == 'CONTINUE_EVENT' and payload.get('interpretation') == 'support':
                 # Publish the event's provisional span. Coverage still records gaps separately.
                 coverage = self.active['confirmed_support_intervals']
@@ -90,4 +96,10 @@ class StagedEvents(AutonomousEvents):
                         evidence_ids=payload['evidence_ids'][:], reason=payload['reason'])
         updated.update(lifecycle=intent,refinement=revision,candidate=deepcopy(self.candidate))
         return updated
+
+    def finish(self, cursor):
+        if self.active and self.active.get('supported_tail_export'):
+            # The replay ended with this episode open. Export only the span supported so far.
+            cursor = min(cursor, self.active['published_through_s'])
+        return super().finish(cursor)
 

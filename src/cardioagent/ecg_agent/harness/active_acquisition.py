@@ -4,6 +4,8 @@ from math import isfinite
 
 
 SUPPLEMENTARY_TOOLS = frozenset({"score_ecgfounder", "assess_quality", "get_rate_rhythm"})
+QUALITY_FLAGS = frozenset({"nonfinite_or_flat", "longest_flat_run_s",
+                           "baseline_power_fraction", "high_frequency_power_fraction"})
 
 
 def stable_action(primary, state, profile):
@@ -55,6 +57,19 @@ def measurement_menu(state, calls, *, live_scoring):
     if live_scoring and start-5 >= state['retained_window_s'][0]:
         offer('check_shifted_primary', 'score_ecgfounder', primary, start-5, end-5)
     return options
+
+
+def quality_flags(result):
+    """Extract the quality tool's artifact flags without inferring rhythm."""
+    return sorted(QUALITY_FLAGS.intersection(result.get('reasons', ())))
+
+
+def decisive_pair(calls, window, edges):
+    scores = {}
+    for row in calls:
+        if row['tool'] == 'score_ecgfounder' and row['status'] == 'ok' and row['window_s'] == window:
+            scores[row['lead']] = max(row['result']['af_score'], row['result']['afl_score'])
+    return len(scores) == 2 and (min(scores.values()) >= edges[-1] or max(scores.values()) < edges[1])
 
 
 def onset_supported(timeline, window):

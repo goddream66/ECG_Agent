@@ -188,6 +188,10 @@ def choose_action(model, counts, emit, audit, window, obs, active, candidate, tr
 
 def acquire_from_menu(reviewer, state, session, call_window, emit, audit):
     while len(session.calls) < session.max_calls:
+        if reviewer.focused_evidence_menu and active_acquisition.decisive_pair(
+                session.calls, state['window_s'], reviewer.window_band_profile['edges']):
+            emit('llm_steps', dict(audit, phase='select_evidence', status='concordant_evidence_stop'))
+            return
         options = active_acquisition.measurement_menu(state, session.calls, live_scoring=reviewer.live_scoring)
         if not options:
             return
@@ -195,6 +199,10 @@ def acquire_from_menu(reviewer, state, session, call_window, emit, audit):
         observations = [dict(tool=row['tool'], lead=row['lead'], window_s=row['window_s'],
                              status=row['status'], fields=measured_event.numeric_fields(row))
                         for row in session.calls]
+        if reviewer.focused_evidence_menu:
+            for summary, row in zip(observations, session.calls, strict=True):
+                if row['tool'] == 'assess_quality':
+                    summary['artifact_flags'] = active_acquisition.quality_flags(row['result'])
         pending = state.get('pending_question')
         data = dict(window_s=state['window_s'], open_event=state['open_event'] is not None,
                     candidate=state['candidate'] is not None, pending=pending and pending['question'],
@@ -207,12 +215,16 @@ def acquire_from_menu(reviewer, state, session, call_window, emit, audit):
                 raise ValueError('Choose one offered option')
             return args
 
-        selected = ask(reviewer.model, reviewer.counts, emit, audit, data, tool,
-                       'Take the option that would most change your next event decision. For a possible onset or end, '
+        instruction = ('Take the option that would most change your next event decision. For a possible onset or end, '
                        'compare the unmeasured lead on the current interval first if it can corroborate or contradict '
                        'the change. A single high score can create a candidate only. A signal quality check can help '
                        'identify an artifact. A shifted score is useful near a boundary, but can share samples with '
-                       'another measurement. Finish if the current measurements already answer the question.', select)
+                       'another measurement. Finish if the current measurements already answer the question.')
+        if reviewer.focused_evidence_menu:
+            instruction += (' When co-timed readings conflict and artifact is plausible, quality checks can help '
+                            'describe the signal. A quality flag is about signal integrity. '
+                            'An unflagged regular RR cannot by itself rule out atrial flutter.')
+        selected = ask(reviewer.model, reviewer.counts, emit, audit, data, tool, instruction, select)
         if selected.get('status') == 'error' or selected['option'] == 'finish':
             return
         args = options[selected['option']].copy()
@@ -264,6 +276,10 @@ def retain_end_evidence(state, transition, aliases, ledger):
 
 def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, tools, *, stable=None):
     data=json.loads(measured_event.final_context(state,aliases,ledger)[1]['content'])
+    if reviewer.focused_evidence_menu:
+        for row in data['measurements']:
+            if row['tool'] == 'assess_quality':
+                row['artifact_flags'] = active_acquisition.quality_flags(ledger.get(aliases[row['id']])['result'])
     rows={r['id']:r for r in data['measurements']}
     a,b=state['window_s']
     def usable(key):
@@ -397,6 +413,8 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
         payload['decision_source'] = 'stable_primary'
     if memory is not None:
         payload['end_review_memory'] = memory
+    if reviewer.focused_evidence_menu:
+        payload['supported_tail_export'] = True
     if transition is not None:
         prior = state.get('pending_question')
         if action=='REQUEST_CLOSE' and refinement['status']!='located':

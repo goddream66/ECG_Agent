@@ -13,10 +13,12 @@ from tests.runtime.test_staged_review import act, boundary
 
 
 class EndFollowupTests(unittest.TestCase):
-    def run_persistent_episode(self, observations, score_pairs, *, interrupt_at=None, adaptive=False, menu=False):
+    def run_persistent_episode(self, observations, score_pairs, *, interrupt_at=None, adaptive=False, menu=False,
+                               focused=False):
         cfg_path = fixture.ROOT/'configs/ecg/react_qwen_followup_close.json'
         config = dict(json.loads(cfg_path.read_text()), persistent_event_evidence=True,
-                      adaptive_acquisition=adaptive or menu, evidence_menu=menu)
+                      adaptive_acquisition=adaptive or menu or focused, evidence_menu=menu or focused,
+                      focused_evidence_menu=focused)
         with TemporaryDirectory() as tmp:
             cfg = Path(tmp)/'event_evidence.json'
             cfg.write_text(json.dumps(config))
@@ -99,6 +101,33 @@ class EndFollowupTests(unittest.TestCase):
         observed = [row['option'] for row in steps if row.get('phase') == 'select_evidence'
                     and row['status'] == 'observed']
         self.assertEqual(observed, ['compare_current_leads'])
+
+    def test_focused_menu_stops_after_concordant_measurement(self):
+        actions = [
+            reply('select_evidence', dict(option='compare_current_leads', reason='check new high')),
+            reply('assess_window', dict(finding='TARGET_PRESENT', evidence_ids=['E1','E2'], reason='both high')),
+            act('CONFIRM_EVENT', None), boundary('unlocalized'),
+        ]
+        result, _, _, steps, requests = self.run_persistent_episode(actions, [[.94,.05]], focused=True)
+        self.assertEqual(result['intervals'], [[0,10]])
+        self.assertEqual(len(requests), 4)
+        self.assertTrue(any(row['status'] == 'concordant_evidence_stop' for row in steps))
+
+    def test_focused_export_ends_at_last_supported_interval(self):
+        actions = [
+            reply('select_evidence', dict(option='compare_current_leads', reason='check new high')),
+            reply('assess_window', dict(finding='TARGET_PRESENT', evidence_ids=['E1','E2'], reason='both high')),
+            act('CONFIRM_EVENT', None), boundary('unlocalized'),
+            reply('select_evidence', dict(option='compare_current_leads', reason='check possible end')),
+            reply('assess_window', dict(finding='TARGET_ABSENT', evidence_ids=['E1','E2'], reason='both low')),
+            act('REQUEST_CLOSE', 1),
+        ]
+        result, _, updates, _, _ = self.run_persistent_episode(actions, [[.94,.05],[.1,.04]], focused=True)
+        self.assertEqual(result['intervals'], [[0,10]])
+        self.assertTrue(result['events'][0]['right_censored'])
+        self.assertIsNone(result['events'][0]['end_decided_at_s'])
+        self.assertIsNone(updates[-1]['event_update'])
+
 
     def test_single_new_high_can_create_candidate_and_adjacent_high_can_confirm(self):
         sample = [
