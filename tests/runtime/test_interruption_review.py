@@ -42,3 +42,19 @@ class InterruptionTest(TestCase):
             self.assertEqual(res['decision']['status'],'accepted')
             with gzip.open(log,'rt') as stream:
                 self.assertEqual(json.load(stream)['cursor_s'],30)
+
+    def test_finding_resolution_tracks_available_measurements(self):
+        def submit(action):
+            return reply('submit_interruption_review',dict(action=action,reason='Review the measured interval.'))
+        model=Model([submit('FLAG_CELL_2'),submit('FLAG_WINDOW')])
+        result=review(self.case,model,None,lambda *args:None,'aligned',grounded=True)
+        self.assertEqual(result['decision']['submitted_action'],'FLAG_WINDOW')
+        self.assertEqual(result['counts']['llm_calls'],2)
+        measured=lambda:{'ECG1':[None,None,[1.,.1,.1,1.,2,.1],None,None],'ECG2':[None]*5}
+        model=Model([reply('measure_beat_change',{}),submit('FLAG_CELL_2')])
+        result=review(self.case,model,measured,lambda *args:None,'active',grounded=True)
+        opts=lambda i:model.requests[i][1][0]['function']['parameters']['properties']['action']['enum']
+        self.assertNotIn('FLAG_CELL_2',opts(0))
+        self.assertIn('FLAG_CELL_2',opts(1))
+        self.assertNotIn('FLAG_CELL_1',opts(1))
+        self.assertEqual(result['decision']['cell'],'2')
