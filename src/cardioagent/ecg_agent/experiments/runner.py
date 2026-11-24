@@ -110,6 +110,7 @@ def run_job(job):
                     adaptive_acquisition=job['llm'].get('adaptive_acquisition',False),
                     evidence_menu=job['llm'].get('evidence_menu',False),
                     focused_evidence_menu=job['llm'].get('focused_evidence_menu',False),
+                    acquire_or_assess=job['llm'].get('acquire_or_assess',False),
                     boundary_pair_menu=job['llm'].get('boundary_pair_menu',False),
                     advisory_reference=job['llm'].get('advisory_reference',False),
                     compact_history=job['llm'].get('compact_history',False),

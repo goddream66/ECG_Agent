@@ -178,7 +178,8 @@ class ReActReview:
                  direction_only_reference=False, persistent_event_evidence=False, adaptive_acquisition=False,
                  evidence_menu=False, focused_evidence_menu=False, boundary_pair_menu=False,
                  advisory_reference=False, compact_history=False, accepted_support_memory=False,
-                 selective_lifecycle=False, chronological_history_ids=False):
+                 selective_lifecycle=False, chronological_history_ids=False,
+                 acquire_or_assess=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -237,6 +238,9 @@ class ReActReview:
         if type(focused_evidence_menu) is not bool or (focused_evidence_menu and not evidence_menu):
             raise ValueError('The focused evidence menu requires the evidence menu')
         self.focused_evidence_menu = focused_evidence_menu
+        if type(acquire_or_assess) is not bool or (acquire_or_assess and not focused_evidence_menu):
+            raise ValueError('Joint acquisition and assessment require the focused evidence menu')
+        self.acquire_or_assess = acquire_or_assess
         if type(boundary_pair_menu) is not bool or (boundary_pair_menu and not focused_evidence_menu):
             raise ValueError('The boundary pair menu requires focused evidence acquisition')
         self.boundary_pair_menu = boundary_pair_menu
@@ -498,7 +502,7 @@ class ReActReview:
         else:
             state, messages, tools, finish_schema, final_schema = self._legacy_context(
                 session, tracker, identity, start, end, primary, primary_lead, secondary, call_window, allowed)
-        if self.evidence_menu and stable is None:
+        if self.evidence_menu and stable is None and not self.acquire_or_assess:
             staged_review.acquire_from_menu(
                 self, state, session, call_window, emit, dict(identity, cursor_s=end, step=0))
         visible_history = {key for window in self.history for key in window.get('evidence_ids', [])}

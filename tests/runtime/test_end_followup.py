@@ -37,13 +37,13 @@ class EndFollowupTests(unittest.TestCase):
         _, proof = step(20, lows, 'negative', memory)
         self.assertTrue(proof['can_confirm'])
     def run_persistent_episode(self, observations, score_pairs, *, interrupt_at=None, adaptive=False, menu=False,
-                               focused=False, pairs=False, advisory=False):
+                               focused=False, pairs=False, advisory=False, joint=False):
         name = 'react_qwen_review_pilot.json' if advisory else 'react_qwen_followup_close.json'
         cfg_path = fixture.ROOT/'configs/ecg'/name
         config = dict(json.loads(cfg_path.read_text()), persistent_event_evidence=True,
                       adaptive_acquisition=adaptive or menu or focused or pairs,
                       evidence_menu=menu or focused or pairs, focused_evidence_menu=focused or pairs,
-                      boundary_pair_menu=pairs, advisory_reference=advisory)
+                      boundary_pair_menu=pairs, advisory_reference=advisory, acquire_or_assess=joint)
         with TemporaryDirectory() as tmp:
             cfg = Path(tmp)/'event_evidence.json'
             cfg.write_text(json.dumps(config))
@@ -160,6 +160,45 @@ class EndFollowupTests(unittest.TestCase):
         self.assertEqual(result['intervals'], [[0,10]])
         self.assertEqual(len(requests), 4)
         self.assertTrue(any(row['status'] == 'concordant_evidence_stop' for row in steps))
+
+    def test_joint_measurement_rebuilds_visible_citations_and_preserves_close(self):
+        actions = []
+        for finding, event_action, event_id in (
+            ('TARGET_PRESENT', 'CONFIRM_EVENT', None),
+            ('TARGET_ABSENT', 'REQUEST_CLOSE', 1),
+            ('TARGET_ABSENT', 'REQUEST_CLOSE', 1),
+        ):
+            actions.extend([
+                reply('request_more_evidence', dict(option='compare_current_leads', reason='check change')),
+                reply('assess_window', dict(finding=finding, evidence_ids=['E1','E2'], reason='both leads')),
+                act(event_action, event_id),
+            ])
+        actions.append(reply('confirm_event_end', dict(decision='CONFIRM_END', reason='two contrary intervals')))
+        result, _, _, steps, requests = self.run_persistent_episode(
+            actions, [[.94,.01],[.12,.05],[.16,.08]], pairs=True, joint=True
+        )
+        offered = [[t['function']['name'] for t in row['tools']] for row in requests]
+        self.assertEqual(offered.count(['assess_window','request_more_evidence']), 3)
+        self.assertEqual(offered.count(['assess_window']), 3)
+        self.assertNotIn(['finish_measurements'], offered)
+        self.assertEqual(len(actions), len(requests))
+        acquired = [row for row in steps if row.get('phase')=='request_more_evidence' and row['status']=='observed']
+        self.assertEqual(len(acquired), 3)
+        self.assertEqual(result['events'][0]['end_decided_at_s'], 30)
+        self.assertEqual(result['intervals'], [[0,10]])
+
+    def test_rejected_joint_request_keeps_a_terminal_assessment(self):
+        bad = reply('request_more_evidence', dict(option='future_window', reason='not an available option'))
+        actions = [bad, bad,
+                   reply('assess_window', dict(finding='CANNOT_TELL', evidence_ids=['E1'], reason='single lead')),
+                   act('NO_EVENT_CHANGE', None)]
+        result, trace, _, steps, requests = self.run_persistent_episode(
+            actions, [[.94,.01]], pairs=True, joint=True
+        )
+        self.assertEqual(len(actions), len(requests))
+        self.assertEqual(result['counts']['model_calls'], 1)
+        self.assertEqual(trace[0]['action'], 'NO_EVENT_CHANGE')
+        self.assertEqual(sum(row['status']=='stage_rejected' for row in steps), 2)
 
     def test_focused_export_ends_at_last_supported_interval(self):
         actions = [

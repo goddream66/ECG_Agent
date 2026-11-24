@@ -26,7 +26,8 @@ def choice(values):
     return dict(type='string',enum=list(values))
 
 
-def ask(model, counts, emit, audit, data, tool, instruction, validate, extras=(), measure=None, *, compact_history=False):
+def ask(model, counts, emit, audit, data, tool, instruction, validate, extras=(), measure=None, *,
+        compact_history=False, alternative=None):
     name = tool['function']['name']
     if compact_history:
         view = table_view(data)
@@ -43,6 +44,8 @@ def ask(model, counts, emit, audit, data, tool, instruction, validate, extras=()
         log=dict(audit,phase=name,attempt=failures+1)
         try:
             available=[tool]+([] if used_measure else list(extras))
+            if alternative:
+                available.append(alternative[0])
             try:
                 reply=model.complete(messages,available)
             finally:
@@ -58,7 +61,10 @@ def ask(model, counts, emit, audit, data, tool, instruction, validate, extras=()
             log.update(action=fn['name'],arguments=deepcopy(args))
             if not isinstance(args,dict):
                 raise ValueError('Arguments must be an object')
-            if fn['name']!=name:
+            chosen_tool, validator = tool, validate
+            if alternative and fn['name']==alternative[0]['function']['name']:
+                chosen_tool, validator = alternative
+            elif fn['name']!=name:
                 if used_measure or fn['name'] not in {t['function']['name'] for t in extras}:
                     raise ValueError('Choose one offered function')
                 used_measure=True
@@ -66,12 +72,12 @@ def ask(model, counts, emit, audit, data, tool, instruction, validate, extras=()
                 emit('llm_steps',dict(log,status='observed',evidence_id=row['evidence_id']))
                 messages.append(dict(role='user',content=json.dumps(row)))
                 continue
-            props=tool['function']['parameters']
+            props=chosen_tool['function']['parameters']
             if set(args)-props['properties'].keys() or set(props['required'])-args.keys():
                 raise ValueError('Expected fields: '+', '.join(props['required']))
             if not isinstance(args.get('reason'),str) or not args['reason'].strip():
                 raise ValueError('Supply your reason')
-            result=validate(args)
+            result=validator(args)
             emit('llm_steps',dict(log,status='stage_committed',result=result))
             return result
         except (ValueError,RuntimeError,TypeError,KeyError,OSError) as exc:
@@ -83,7 +89,8 @@ def ask(model, counts, emit, audit, data, tool, instruction, validate, extras=()
 
 
 def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode, profile=None, compare_leads=False,
-           bound_choices=False, direction_only=False, *, advisory_reference=False, compact_history=False):
+           bound_choices=False, direction_only=False, *, advisory_reference=False, compact_history=False,
+           acquisition=None):
     rows = {r['id']:r for r in data['measurements']}
     a,b = data['window_s']
     def interpret(args):
@@ -157,7 +164,29 @@ def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode,
             else:
                 window_semantics.verify_band(canonical, rows, data['window_s'], profile)
         return observation
-    return ask(model,counts,emit,audit,observation_data,tool,instruction,validate_observation,compact_history=compact_history)
+    alternative = None
+    if acquisition:
+        options = acquisition['options']
+        observation_data['supplementary_checks'] = acquisition
+        instruction += (
+            ' Submit assess_window when you can judge the current segment, including justified uncertainty. '
+            'If a specific unresolved question could change the judgment or the event boundary, choose '
+            'request_more_evidence with one listed check. Only returned measurements can be cited. '
+            'Compare the other lead on the same interval for a possible onset or end with only one lead measured. '
+            'Quality can explain artifacts. Regular RR alone cannot exclude flutter. Shifted windows share samples. '
+            'When the listed checks cannot resolve the question, submit your assessment now.'
+        )
+        request = schema('request_more_evidence', 'Ask for one offered measurement before assessing this interval.',
+                         dict(option=choice(options), reason=TEXT), ['option','reason'])
+
+        def validate_request(args):
+            if args['option'] not in options:
+                raise ValueError('Choose one displayed measurement option')
+            return dict(status='acquire', option=args['option'], reason=args['reason'])
+
+        alternative = (request, validate_request)
+    return ask(model,counts,emit,audit,observation_data,tool,instruction,validate_observation,
+               compact_history=compact_history,alternative=alternative)
 
 
 def choose_action(model, counts, emit, audit, window, obs, active, candidate, transition=None, followup=False,
@@ -410,25 +439,67 @@ def confirm_end_with_evidence(model, counts, emit, audit, view, aliases, *, comp
                compact_history=compact_history)
 
 
-def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, tools, *, stable=None):
-    data=json.loads(measured_event.final_context(state,aliases,ledger)[1]['content'])
+def assessment_data(reviewer, state, aliases, ledger):
+    data = json.loads(measured_event.final_context(state, aliases, ledger)[1]['content'])
     if reviewer.focused_evidence_menu:
         for row in data['measurements']:
             if row['tool'] == 'assess_quality':
                 row['artifact_flags'] = active_acquisition.quality_flags(ledger.get(aliases[row['id']])['result'])
-    rows={r['id']:r for r in data['measurements']}
-    a,b=state['window_s']
-    def usable(key):
-        r=rows.get(key,{})
-        return (r.get('direction_allowed') and all(type(r['fields'].get(k)) in (int,float) and isfinite(r['fields'][k]) for k in measured_event.PAIR)
-                and r['window_s'][1]<=b and ledger.get(aliases[key])['available_at_s']<=b)
-    if stable is None:
+    return data
+
+
+def assess_with_checks(reviewer, state, aliases, ledger, session, emit, audit, call_window):
+    end = state['window_s'][1]
+    can_acquire = reviewer.acquire_or_assess
+    while True:
+        acquisition = None
+        if (can_acquire and len(session.calls) < session.max_calls and not active_acquisition.decisive_pair(
+                session.calls, state['window_s'], reviewer.window_band_profile['edges'])):
+            options = active_acquisition.measurement_menu(state, session.calls, live_scoring=reviewer.live_scoring)
+            if options:
+                pending = state.get('pending_question')
+                acquisition = dict(options=options, open_event=state['open_event'] is not None,
+                                   pending=pending and pending['question'],
+                                   remaining=session.max_calls-len(session.calls))
+        data = assessment_data(reviewer, state, aliases, ledger)
+        rows = {r['id']: r for r in data['measurements']}
+
+        def usable(key):
+            return usable_founder(rows.get(key, {}), key, aliases, ledger, end)
+
         obs = assess(reviewer.model, reviewer.counts, emit, audit, data, aliases, usable,
-                     lambda key: ledger.get(aliases[key])['available_at_s'] <= b,
+                     lambda key: ledger.get(aliases[key])['available_at_s'] <= end,
                      getattr(reviewer, 'window_assessment_mode', 'legacy'), getattr(reviewer, 'window_band_profile', None),
                      reviewer.compare_rhythm_leads, reviewer.bound_window_choices, reviewer.direction_only_reference,
-                     advisory_reference=reviewer.advisory_reference, compact_history=reviewer.compact_history)
+                     advisory_reference=reviewer.advisory_reference, compact_history=reviewer.compact_history,
+                     acquisition=acquisition)
+        if obs['status']=='acquire':
+            args = acquisition['options'][obs['option']].copy()
+            name = args.pop('tool')
+            row = call_window(name, args, trigger_reason='joint_assessment_requested')
+            aliases[f'E{len(session.calls)}'] = row['evidence_id']
+            emit('llm_steps', dict(audit, phase='request_more_evidence', status='observed',
+                                   action=name, arguments=args, evidence_id=row['evidence_id']))
+        elif obs['status']=='error' and acquisition:
+            # An unsuccessful request does not discard the observations already acquired.
+            can_acquire = False
+        else:
+            return obs, data, rows
+
+
+def usable_founder(row, key, aliases, ledger, cursor):
+    return (row.get('direction_allowed') and all(type(row['fields'].get(k)) in (int,float)
+            and isfinite(row['fields'][k]) for k in measured_event.PAIR)
+            and row['window_s'][1]<=cursor and ledger.get(aliases[key])['available_at_s']<=cursor)
+
+
+def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, tools, *, stable=None):
+    a,b=state['window_s']
+    if stable is None:
+        obs, data, rows = assess_with_checks(reviewer, state, aliases, ledger, session, emit, audit, call_window)
     else:
+        data = assessment_data(reviewer, state, aliases, ledger)
+        rows = {r['id']: r for r in data['measurements']}
         direction, _ = stable
         key = state['already_acquired_evidence'][0]['evidence_id']
         obs = dict(status='accepted', interpretation=direction, assessment=ASSESSMENTS[direction],
@@ -477,7 +548,9 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
             if args['status']=='unlocalized':
                 return dict(status='unlocalized',reason=args['reason'])
             left,right=args.get('before_id'),args.get('after_id')
-            if args['status']!='located' or not all(usable(k) for k in (left,right)):
+            if args['status']!='located' or not all(
+                usable_founder(rows.get(k, {}), k, aliases, ledger, b) for k in (left,right)
+            ):
                 raise ValueError('Choose usable before_id and after_id or unlocalized')
             x,y=rows[left]['window_s']
             z,w=rows[right]['window_s']
