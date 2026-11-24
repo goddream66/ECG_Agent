@@ -77,7 +77,7 @@ def ask(model, counts, emit, audit, data, tool, instruction, validate, extras=()
 
 
 def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode, profile=None, compare_leads=False,
-           bound_choices=False, direction_only=False):
+           bound_choices=False, direction_only=False, *, advisory_reference=False):
     rows = {r['id']:r for r in data['measurements']}
     a,b = data['window_s']
     def interpret(args):
@@ -106,11 +106,16 @@ def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode,
     observation_data, tool, instruction = window_semantics.window_request(data, tool, instruction, mode, profile)
     if direction_only:
         observation_data, instruction = window_semantics.direction_only_view(observation_data, instruction)
+    advisory = window_semantics.advisory_pair(rows, [a,b], profile) if advisory_reference else ()
     if bound_choices:
         allowed=window_semantics.available_findings(rows,[a,b],profile)
+        if advisory and 'TARGET_PRESENT' not in allowed:
+            allowed.append('TARGET_PRESENT')
         tool['function']['parameters']['properties']['finding']['enum']=allowed
         observation_data['available_findings']=allowed
-        instruction += (' Choose one available_finding. These are the observations supported by the current '
+        instruction += (' Choose one available_finding. You may abstain from a directional finding.'
+                        if advisory else
+                        ' Choose one available_finding. These are the observations supported by the current '
                         'measurement contract. A numeric rise or fall inside an indeterminate band is still '
                         'indeterminate. You may abstain from a directional finding.')
     if compare_leads:
@@ -122,6 +127,13 @@ def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode,
                         'Missing measurements and the two subtypes of the same lead do not create lead disagreement.')
         if direction_only and bound_choices:
             observation_data, instruction = window_semantics.paired_observation_view(observation_data, instruction)
+    if advisory:
+        observation_data['advisory_pair_ids'] = advisory
+        instruction += (' The two listed co-timed lead measurements permit a tentative target-present finding '
+                        'even though at least one reference band is inconclusive. The empirical bands are '
+                        'derived from other records. Cite both aligned IDs and explain why the current '
+                        'combined AF-or-AFL evidence is persuasive, or choose CANNOT_TELL. The pair can share '
+                        'artifacts. Do not infer target presence from two different subtype names alone.')
     def validate_observation(args):
         if bound_choices and args.get('finding') not in allowed:
             raise ValueError(f'Choose one of the available findings: {allowed}')
@@ -130,7 +142,14 @@ def assess(model, counts, emit, audit, data, aliases, usable, visible_now, mode,
             raise ValueError('Current measured rhythm directions disagree; acknowledge the conflict or uncertainty.')
         observation = interpret(canonical)
         if mode in ('verified','union_reference'):
-            window_semantics.verify_band(canonical, rows, data['window_s'], profile)
+            citations = canonical['evidence_ids']
+            if (advisory and canonical['interpretation'] == 'support' and set(advisory).issubset(citations)
+                    and not any(window_semantics.band(rows[key], profile)['direction'] == 'negative'
+                                for key in citations if window_semantics.current_founder(rows[key], [a,b]))):
+                observation['support_basis'] = 'paired_advisory_reference'
+                observation['support_pair_ids'] = [aliases[key] for key in advisory]
+            else:
+                window_semantics.verify_band(canonical, rows, data['window_s'], profile)
         return observation
     return ask(model,counts,emit,audit,observation_data,tool,instruction,validate_observation)
 
@@ -249,7 +268,7 @@ def transition_context(data, profile):
                 pending_question=data.get('pending_question'))
 
 
-def retain_end_evidence(state, transition, aliases, ledger):
+def retain_end_evidence(state, transition, aliases, ledger, observation):
     window = state['window_s']
     current = []
     for row in transition['rhythm_by_time']:
@@ -259,6 +278,13 @@ def retain_end_evidence(state, transition, aliases, ledger):
         if ledger.get(key)['available_at_s'] <= window[1]:
             current.append(dict(evidence_id=key, window_s=window, lead=row['lead'],
                                 direction=row['reference']['direction'], target_score=row['target_score']))
+    if observation.get('support_basis') == 'paired_advisory_reference':
+        # The validated interpretation belongs to the pair. Preserve the actual band on each lead.
+        paired_ids = observation['support_pair_ids']
+        if len(current) != 2 or set(paired_ids) != {row['evidence_id'] for row in current}:
+            raise ValueError('Both arrived measurements must be present for an advisory support anchor')
+        current = [dict(current[0], direction='support', basis='paired_advisory_reference',
+                        measurements=current)]
     memory = advance_end_memory(state.get('end_review_memory', {}), window, current)
     by_id = {key: alias for alias, key in aliases.items()}
     proof = {}
@@ -271,6 +297,15 @@ def retain_end_evidence(state, transition, aliases, ledger):
             aliases[alias] = item['evidence_id']
             proof[role] = dict(id=alias, window_s=item['window_s'], lead=item['lead'],
                                direction=item['direction'], target_score=item['target_score'])
+            if item.get('basis') == 'paired_advisory_reference':
+                proof[role]['basis'] = item['basis']
+                proof[role]['measurements'] = []
+                for index, row in enumerate(item['measurements']):
+                    key = row['evidence_id']
+                    short = alias if key == item['evidence_id'] else by_id.get(key, f'event_{role}_{index+1}')
+                    aliases[short] = key
+                    proof[role]['measurements'].append(dict(id=short, lead=row['lead'],
+                        target_score=row['target_score'], reference_direction=row['direction']))
     return memory, dict(proof, can_confirm=bool(proof['later_against']))
 
 
@@ -320,7 +355,8 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
         obs = assess(reviewer.model, reviewer.counts, emit, audit, data, aliases, usable,
                      lambda key: ledger.get(aliases[key])['available_at_s'] <= b,
                      getattr(reviewer, 'window_assessment_mode', 'legacy'), getattr(reviewer, 'window_band_profile', None),
-                     reviewer.compare_rhythm_leads, reviewer.bound_window_choices, reviewer.direction_only_reference)
+                     reviewer.compare_rhythm_leads, reviewer.bound_window_choices, reviewer.direction_only_reference,
+                     advisory_reference=reviewer.advisory_reference)
     else:
         direction, _ = stable
         key = state['already_acquired_evidence'][0]['evidence_id']
@@ -339,13 +375,14 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
     followup = reviewer.confirm_end_with_followup
     memory = None
     if reviewer.persistent_event_evidence:
-        memory, proof = retain_end_evidence(state, transition, aliases, ledger)
+        memory, proof = retain_end_evidence(state, transition, aliases, ledger, obs)
     if followup and active:
         transition['end_evidence'] = proof if memory is not None else end_evidence(
             transition['rhythm_by_time'], [a,b], active)
     corroborated = None
     if reviewer.evidence_menu and not active:
-        corroborated = active_acquisition.onset_supported(transition['rhythm_by_time'], [a,b])
+        corroborated = (obs.get('support_basis') == 'paired_advisory_reference'
+                        or active_acquisition.onset_supported(transition['rhythm_by_time'], [a,b]))
     intent = (choose_action(reviewer.model, reviewer.counts, emit, audit, [a,b], obs, active, candidate, transition, followup,
                             corroborated_onset=corroborated)
               if stable is None else dict(status='accepted', action=stable[1], event_id=active['event_id'] if active else None,
@@ -362,10 +399,13 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
                 if args['decision']!='CONFIRM_END':
                     raise ValueError('Choose WAIT or CONFIRM_END')
                 left, first, last=(proof[k] for k in ('before','first_against','later_against'))
-                return dict(status='located',reason=args['reason'],
+                result = dict(status='located',reason=args['reason'],
                             boundary=dict(kind='bracketed',range_s=[left['window_s'][0],first['window_s'][1]]),
                             before_id=aliases[left['id']],after_id=aliases[first['id']],
                             confirmation_evidence_id=aliases[last['id']])
+                if left.get('measurements'):
+                    result['support_pair_ids'] = [aliases[row['id']] for row in left['measurements']]
+                return result
             tool=schema('confirm_event_end','Decide whether later evidence confirms the suspected end.',
                         dict(decision=choice(['CONFIRM_END','WAIT']),reason=TEXT),['decision','reason'])
             refinement=ask(reviewer.model,reviewer.counts,emit,audit,

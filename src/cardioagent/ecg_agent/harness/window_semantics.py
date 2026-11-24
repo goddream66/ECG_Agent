@@ -196,6 +196,18 @@ def band(row, profile):
     return profile['bins'][row['lead']][index]
 
 
+def advisory_pair(rows, window, profile):
+    """Offer review of ambiguous AFDB reference bands using two simultaneous leads."""
+    aligned = [(key, row) for key, row in rows.items()
+               if row['window_s'] == window and current_founder(row, window)]
+    if len(aligned) != 2 or len({row['lead'] for _, row in aligned}) != 2:
+        return ()
+    directions = {band(row, profile)['direction'] for _, row in aligned}
+    if 'indeterminate' not in directions or 'negative' in directions:
+        return ()
+    return tuple(key for key, _ in aligned)
+
+
 def verify_band(observation, rows, window, profile):
     direction = observation['interpretation']
     if direction not in ('support', 'negative'):

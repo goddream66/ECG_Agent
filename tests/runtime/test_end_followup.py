@@ -14,17 +14,41 @@ from tests.runtime.test_staged_review import act, boundary
 
 class EndFollowupTests(unittest.TestCase):
     def run_persistent_episode(self, observations, score_pairs, *, interrupt_at=None, adaptive=False, menu=False,
-                               focused=False, pairs=False):
-        cfg_path = fixture.ROOT/'configs/ecg/react_qwen_followup_close.json'
+                               focused=False, pairs=False, advisory=False):
+        name = 'react_qwen_review_pilot.json' if advisory else 'react_qwen_followup_close.json'
+        cfg_path = fixture.ROOT/'configs/ecg'/name
         config = dict(json.loads(cfg_path.read_text()), persistent_event_evidence=True,
                       adaptive_acquisition=adaptive or menu or focused or pairs,
                       evidence_menu=menu or focused or pairs, focused_evidence_menu=focused or pairs,
-                      boundary_pair_menu=pairs)
+                      boundary_pair_menu=pairs, advisory_reference=advisory)
         with TemporaryDirectory() as tmp:
             cfg = Path(tmp)/'event_evidence.json'
             cfg.write_text(json.dumps(config))
             return fixture.EpisodeTests().replay('fixed', observations, len(score_pairs), config_file=cfg,
                                                  score_pairs=score_pairs, interrupt_at=interrupt_at)
+
+    def test_advisory_open_can_close_after_restart_without_relabeling_measurements(self):
+        def pick(option):
+            return reply('select_evidence', dict(option=option, reason='compare the two leads'))
+
+        def vote(finding):
+            return reply('assess_window', dict(finding=finding, evidence_ids=['E1','E2'], reason='paired scores'))
+
+        calls = [pick('compare_current_leads'), pick('finish'), vote('TARGET_PRESENT'), act('CONFIRM_EVENT', None)]
+        for _ in range(2):
+            calls.extend([pick('compare_current_leads'), vote('TARGET_ABSENT'), act('REQUEST_CLOSE',1)])
+        calls.append(reply('confirm_event_end', dict(decision='CONFIRM_END', reason='two later contrary intervals')))
+        result, trace, updates, _, _ = self.run_persistent_episode(
+            calls, [[.77,.09],[.12,.05],[.13,.04]], interrupt_at=20, pairs=True, advisory=True)
+        event, = result['events']
+        self.assertEqual(event['end_decided_at_s'], 30)
+        self.assertEqual(event['end_boundary']['range_s'], [0,20])
+        pair = trace[0]['llm_action']['support_pair_ids']
+        self.assertEqual(set(event['last_support_pair_ids']), set(pair))
+        self.assertEqual(set(updates[-1]['event_update']['last_support_pair_ids']), set(pair))
+        self.assertTrue(set(pair).issubset(event['end_evidence_ids']))
+        saved = trace[0]['llm_action']['end_review_memory']['support']['measurements']
+        self.assertEqual([row['direction'] for row in saved], ['indeterminate','indeterminate'])
 
     def test_support_survives_ambiguity_and_context_eviction_on_resume(self):
         def window(start, finding, action, ident):

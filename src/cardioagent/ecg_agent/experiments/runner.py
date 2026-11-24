@@ -111,6 +111,7 @@ def run_job(job):
                     evidence_menu=job['llm'].get('evidence_menu',False),
                     focused_evidence_menu=job['llm'].get('focused_evidence_menu',False),
                     boundary_pair_menu=job['llm'].get('boundary_pair_menu',False),
+                    advisory_reference=job['llm'].get('advisory_reference',False),
                     compact_final_evidence=job['llm'].get('compact_final_evidence', True),
                     memory_write=job['llm'].get('memory_write', False),
                     memory_retrieve=job['llm'].get('memory_retrieve', False),

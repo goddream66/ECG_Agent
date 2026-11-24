@@ -59,8 +59,12 @@ class StagedEvents(AutonomousEvents):
                            confirming_against=revision['confirmation_evidence_id'])
             event = self.events[-1]
             event['end_evidence_by_role'] = anchors
-            event['end_evidence_ids'] = list(dict.fromkeys([*anchors.values(), *event['end_evidence_ids']]))
+            pair = revision.get('support_pair_ids', [])
+            event['end_evidence_ids'] = list(dict.fromkeys([*anchors.values(), *pair, *event['end_evidence_ids']]))
             updated['event_update']['end_evidence_by_role'] = anchors.copy()
+            if pair:
+                event['last_support_pair_ids'] = pair[:]
+                updated['event_update']['last_support_pair_ids'] = pair[:]
         if action=='CONFIRM_EVENT':
             self.active.update(event_id=ident, detected_at_s=detected,
                                onset_status='bracketed' if bracket else 'unlocalized')
