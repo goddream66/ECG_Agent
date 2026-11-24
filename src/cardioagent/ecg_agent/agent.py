@@ -1,5 +1,6 @@
 """Current event-agent controller: admitted windows in, causal event updates out."""
 from collections import Counter
+from contextlib import nullcontext
 from copy import deepcopy
 from hashlib import sha256
 from math import ceil
@@ -164,7 +165,9 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
                 return call_window(tool, {'lead': lead, 'start_s': start, 'end_s': cursor})
 
             if react:
-                decision, checked, reason = reviewer.review(call, None, secondary, tracker, config,
+                scope=getattr(getattr(reviewer,'model',None),'prefix_scope',nullcontext)
+                with scope():
+                    decision, checked, reason = reviewer.review(call, None, secondary, tracker, config,
                                                             session, logs.emit,
                                                             window_s=(start, cursor), primary_lead=channel,
                                                             **({'review_snapshot': snapshot} if review_mode else {}),

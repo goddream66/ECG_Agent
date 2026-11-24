@@ -1,5 +1,6 @@
 """Record exactly the messages, schemas, raw response and latency of each model call."""
 import gzip
+from contextlib import nullcontext
 import json
 import time
 
@@ -9,6 +10,10 @@ class RecordingChatModel:
         self.model = model
         self.output = output
         self.last_raw = None
+
+    def prefix_scope(self):
+        call=getattr(self.model,'prefix_scope',None)
+        return call() if call else nullcontext()
 
     def complete(self, messages, tools):
         started = time.monotonic()

@@ -1,5 +1,6 @@
 """Qwen adapters: OpenAI-compatible endpoint or lazy local Transformers execution."""
 from copy import deepcopy
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -42,20 +43,59 @@ class LocalQwenModel:
             config['model_path'], local_files_only=True, trust_remote_code=False,
             torch_dtype=torch.float32 if device == 'cpu' else torch.bfloat16).to(device).eval()
         self.device = device
+        self.prefix_cache_tokens=config.get('prefix_cache_tokens',0)
+        if type(self.prefix_cache_tokens) is not int or not 0<=self.prefix_cache_tokens<=4096:
+            raise ValueError('prefix_cache_tokens must be between 0 and 4096')
+        self._prompt_prefix=None
+
+    @contextmanager
+    def prefix_scope(self, *, limit=None):
+        from .prefix_cache import PromptPrefix
+        limit=self.prefix_cache_tokens if limit is None else limit
+        if self._prompt_prefix is not None or type(limit) is not int or not 0<=limit<=4096:
+            raise ValueError('Invalid or nested prompt prefix scope')
+        if limit:
+            self._prompt_prefix=PromptPrefix(limit)
+        try:
+            yield
+        finally:
+            self._prompt_prefix=None
 
     def complete(self, messages, tools):
         import torch
         inputs = self.tokenizer.apply_chat_template(
             messages, tools=tools, tokenize=True, return_dict=True, return_tensors='pt',
-            add_generation_prompt=True, enable_thinking=False).to(self.device)
+            add_generation_prompt=True, enable_thinking=False)
+        scope=self._prompt_prefix
+        tokens=inputs['input_ids'][0].tolist() if scope is not None else None
+        inputs=inputs.to(self.device)
+        budget=self.config.get('max_new_tokens',512)
+        reused=0
         with torch.inference_mode():
-            output = self.model.generate(**inputs, do_sample=False,
-                                         max_new_tokens=self.config.get('max_new_tokens', 512))
+            if scope is None:
+                output=self.model.generate(**inputs,do_sample=False,max_new_tokens=budget)
+            else:
+                previous,reused=scope.consume(tokens)
+                if previous is None:
+                    generated=self.model.generate(**inputs,do_sample=False,max_new_tokens=budget,
+                                                  return_dict_in_generate=True)
+                else:
+                    generated=self.model.generate(**inputs,do_sample=False,max_new_tokens=budget,
+                                                  past_key_values=previous,return_dict_in_generate=True)
+                output=generated.sequences
+                try:
+                    scope.store(tokens,generated)
+                except torch.cuda.OutOfMemoryError:
+                    # The generation already succeeded. Release the cache and keep its original output.
+                    scope.cache=None
+                    scope.tokens=[]
         n = inputs['input_ids'].shape[-1]
         raw = self.tokenizer.decode(output[0, n:], skip_special_tokens=True)
         self.last_raw = raw
-        return ModelReply(parse_qwen_tool_reply(raw), {'prompt_tokens': n,
-                          'completion_tokens': output.shape[-1] - n})
+        usage={'prompt_tokens':n,'completion_tokens':output.shape[-1]-n}
+        if scope is not None:
+            usage['prefix_cache_reused_tokens']=reused
+        return ModelReply(parse_qwen_tool_reply(raw),usage)
 
 
 def parse_qwen_tool_reply(raw):
