@@ -175,7 +175,7 @@ class ReActReview:
                  compact_final_evidence=True, split_event_review=False, measured_event_review=False, staged_event_review=False,
                  window_assessment_mode='legacy', window_band_profile=None, end_range_prompt=False,
                  confirm_end_with_followup=False, compare_rhythm_leads=False, bound_window_choices=False,
-                 direction_only_reference=False):
+                 direction_only_reference=False, persistent_event_evidence=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -217,6 +217,11 @@ class ReActReview:
         if type(direction_only_reference) is not bool or (direction_only_reference and window_assessment_mode != 'union_reference'):
             raise ValueError('Direction-only presentation requires the union reference profile')
         self.direction_only_reference = direction_only_reference
+        if type(persistent_event_evidence) is not bool or (
+            persistent_event_evidence and not (staged_event_review and confirm_end_with_followup)
+        ):
+            raise ValueError('Persistent event evidence requires staged end follow-up')
+        self.persistent_event_evidence = persistent_event_evidence
         self.staged_event_review = staged_event_review
         self.measured_event_review = measured_event_review or staged_event_review
         self.split_event_review = split_event_review or self.measured_event_review
@@ -404,8 +409,9 @@ class ReActReview:
             contract = split_event if self.split_event_review else autonomous_decision
             if self.measured_event_review:
                 contract = measured_event
-            messages = [{'role':'system', 'content':contract.prompt(state, 'acquire')},
-                        {'role':'user', 'content':json.dumps(state, allow_nan=False)}]
+            acquisition = {key: value for key, value in state.items() if key != 'end_review_memory'}
+            messages = [{'role':'system', 'content':contract.prompt(acquisition, 'acquire')},
+                        {'role':'user', 'content':json.dumps(acquisition, allow_nan=False)}]
             tools = [tool for tool in session.registry.function_schemas(include_experimental=True)
                      if tool['function']['name'] in allowed]
             if self.split_event_review:

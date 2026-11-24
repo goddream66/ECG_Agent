@@ -1,6 +1,8 @@
 import unittest
 from collections import Counter
 import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from cardioagent.ecg_agent.harness.end_review import end_evidence
 from tests.runtime import test_autonomous_events as fixture
@@ -11,6 +13,54 @@ from tests.runtime.test_staged_review import act, boundary
 
 
 class EndFollowupTests(unittest.TestCase):
+    def run_persistent_episode(self, observations, score_pairs, *, interrupt_at=None):
+        cfg_path = fixture.ROOT/'configs/ecg/react_qwen_followup_close.json'
+        config = dict(json.loads(cfg_path.read_text()), persistent_event_evidence=True)
+        with TemporaryDirectory() as tmp:
+            cfg = Path(tmp)/'event_evidence.json'
+            cfg.write_text(json.dumps(config))
+            return fixture.EpisodeTests().replay('fixed', observations, len(score_pairs), config_file=cfg,
+                                                 score_pairs=score_pairs, interrupt_at=interrupt_at)
+
+    def test_support_survives_ambiguity_and_context_eviction_on_resume(self):
+        def window(start, finding, action, ident):
+            return [fixture.measure(start), fixture.FINISH,
+                    reply('assess_window', dict(finding=finding, evidence_ids=['E1'], reason='measured')),
+                    act(action, ident)]
+
+        actions = window(0, 'TARGET_PRESENT', 'CONFIRM_EVENT', None) + [boundary('unlocalized')]
+        for start in range(10, 80, 10):
+            actions += window(start, 'CANNOT_TELL', 'HOLD_EVENT', 1)
+        actions += window(80, 'TARGET_ABSENT', 'REQUEST_CLOSE', 1)
+        actions += window(90, 'TARGET_ABSENT', 'REQUEST_CLOSE', 1)
+        actions += [reply('confirm_event_end', dict(decision='CONFIRM_END', reason='sustained negative'))]
+        result, trace, *_ = self.run_persistent_episode(
+            actions, [[.99,.1]] + [[.62,.1]]*7 + [[.1,.02]]*2, interrupt_at=90
+        )
+        self.assertEqual(trace[-2]['state'], 'OPEN')
+        event, = result['events']
+        self.assertEqual(event['end_decided_at_s'], 100)
+        self.assertEqual(event['end_boundary']['range_s'], [0,90])
+        self.assertEqual(event['end_evidence_by_role']['last_support'], event['start_evidence_ids'][0])
+
+    def test_supported_continuation_publishes_without_extra_model_action(self):
+        actions = [fixture.measure(0), fixture.FINISH,
+                   reply('assess_window', dict(finding='TARGET_PRESENT', evidence_ids=['E1'], reason='measured')),
+                   act('CONFIRM_EVENT', None), boundary('unlocalized'),
+                   fixture.measure(10), fixture.FINISH,
+                   reply('assess_window', dict(finding='TARGET_ABSENT', evidence_ids=['E1'], reason='low')),
+                   act('REQUEST_CLOSE', 1),
+                   fixture.measure(20), fixture.FINISH,
+                   reply('assess_window', dict(finding='TARGET_PRESENT', evidence_ids=['E1'], reason='recovered')),
+                   act('CONTINUE_EVENT', 1)]
+        result, _, updates, _, requests = self.run_persistent_episode(actions, [[.99,.1],[.12,.1],[.97,.1]])
+        extension = updates[-1]['event_update']
+        self.assertIsNone(updates[-2]['event_update'])
+        self.assertEqual((extension['kind'], extension['event_id'], extension['interval'],
+                          extension['recorded_at_s'], extension['provisional']), ('extend', 1, [0,30], 30, True))
+        self.assertEqual(len(requests), len(actions))
+        self.assertEqual(result['events'][0]['opposing_intervals'], [[10,20]])
+
     def test_paired_view_marks_only_opposite_cotimed_leads(self):
         from cardioagent.ecg_agent.harness.window_semantics import paired_observation_view
         def row(key,lead,span,meaning):

@@ -5,7 +5,7 @@ import json
 from time import perf_counter
 from . import measured_event, split_event, window_semantics
 from .autonomous_decision import overlap
-from .end_review import end_evidence
+from .end_review import advance_end_memory, end_evidence
 
 ASSESSMENTS = {'support':'SUPPORTS_TARGET', 'negative':'AGAINST_TARGET',
                'conflict':'UNCERTAIN', 'unavailable':'UNCERTAIN'}
@@ -192,6 +192,31 @@ def transition_context(data, profile):
                 pending_question=data.get('pending_question'))
 
 
+def retain_end_evidence(state, transition, aliases, ledger):
+    window = state['window_s']
+    current = []
+    for row in transition['rhythm_by_time']:
+        if row['window_s'] != window:
+            continue
+        key = aliases[row['id']]
+        if ledger.get(key)['available_at_s'] <= window[1]:
+            current.append(dict(evidence_id=key, window_s=window, lead=row['lead'],
+                                direction=row['reference']['direction'], target_score=row['target_score']))
+    memory = advance_end_memory(state.get('end_review_memory', {}), window, current)
+    by_id = {key: alias for alias, key in aliases.items()}
+    proof = {}
+    for role, field in (('before', 'support'), ('first_against', 'first_against'),
+                        ('later_against', 'later_against')):
+        item = memory[field]
+        proof[role] = None
+        if item:
+            alias = by_id.get(item['evidence_id'], 'event_' + role)
+            aliases[alias] = item['evidence_id']
+            proof[role] = dict(id=alias, window_s=item['window_s'], lead=item['lead'],
+                               direction=item['direction'], target_score=item['target_score'])
+    return memory, dict(proof, can_confirm=bool(proof['later_against']))
+
+
 
 def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, tools):
     data=json.loads(measured_event.final_context(state,aliases,ledger)[1]['content'])
@@ -213,8 +238,12 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
     profile = reviewer.window_band_profile if getattr(reviewer,'window_assessment_mode','legacy')=='union_reference' else None
     transition = transition_context(data,profile)
     followup = reviewer.confirm_end_with_followup
+    memory = None
+    if reviewer.persistent_event_evidence:
+        memory, proof = retain_end_evidence(state, transition, aliases, ledger)
     if followup and active:
-        transition['end_evidence']=end_evidence(transition['rhythm_by_time'],[a,b],active)
+        transition['end_evidence'] = proof if memory is not None else end_evidence(
+            transition['rhythm_by_time'], [a,b], active)
     intent = choose_action(reviewer.model, reviewer.counts, emit, audit, [a,b], obs, active, candidate, transition, followup)
     emit('llm_steps',dict(audit,stage='lifecycle',status='lifecycle_result',intent=intent))
     action=intent.get('action')
@@ -304,6 +333,8 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
     payload=dict(**obs,window_assessment=obs,lifecycle=intent,refinement=refinement,
                  event_action=action or 'LIFECYCLE_ERROR',action=action or 'LIFECYCLE_ERROR',
                  boundary=refinement.get('boundary'),pending=None,decision_source='llm_staged')
+    if memory is not None:
+        payload['end_review_memory'] = memory
     if transition is not None:
         prior = state.get('pending_question')
         if action=='REQUEST_CLOSE' and refinement['status']!='located':

@@ -43,3 +43,26 @@ def end_evidence(timeline, window, active):
     eligible = previous_end==end and latest is not None
     return dict(sequence=sequence, can_confirm=eligible,
                 before=before, first_against=first, later_against=latest if eligible else None)
+
+
+def advance_end_memory(previous, window, current):
+    """Keep the last supported side and the current consecutive contrary run.
+
+    Each observation is a full, arrived window. Missing or mixed observations
+    interrupt the run but do not erase the event's last measured support.
+    """
+    a, b = window
+    memory = {key: previous.get(key) for key in ('support', 'first_against', 'later_against')}
+    if previous.get('through_s') != a:
+        memory.update(first_against=None, later_against=None)
+    directions = {row['direction'] for row in current}
+    if directions == {'support'}:
+        memory.update(support=current[0], first_against=None, later_against=None)
+    elif directions == {'negative'} and memory['support']:
+        if memory['first_against'] is None:
+            memory['first_against'] = current[0]
+        else:
+            memory['later_against'] = current[0]
+    else:
+        memory.update(first_against=None, later_against=None)
+    return dict(memory, through_s=b)

@@ -15,6 +15,8 @@ class StagedEvents(AutonomousEvents):
         state.update(candidate=deepcopy(self.candidate), next_event_id=self.next_id,
                      last_closed_end_s=self.events[-1]['estimated_end_s'] if self.events and not self.active
                      else self.events[-2]['estimated_end_s'] if len(self.events)>1 else self.start)
+        if self.active and 'end_review_memory' in self.active:
+            state['end_review_memory'] = deepcopy(self.active['end_review_memory'])
         return state
 
     def apply(self, start, end, payload):
@@ -73,6 +75,19 @@ class StagedEvents(AutonomousEvents):
             updated['event_update']=dict(kind='onset_revision',event_id=self.active['event_id'],
                                          recorded_at_s=end,boundary=deepcopy(bracket))
             self.last_change=deepcopy(updated['event_update'])
+        if self.active and 'end_review_memory' in payload:
+            self.active['end_review_memory'] = deepcopy(payload['end_review_memory'])
+            if action == 'CONTINUE_EVENT' and payload.get('interpretation') == 'support':
+                # Publish the event's provisional span. Coverage still records gaps separately.
+                coverage = self.active['confirmed_support_intervals']
+                supported_end = coverage[-1][1] if coverage else start
+                published = self.active.get('published_through_s', self.active['confirmed_at_s'])
+                if start < supported_end <= end and supported_end > published:
+                    span = [self.active['estimated_start_s'], supported_end]
+                    self.active['published_through_s'] = supported_end
+                    updated['event_update'] = dict(kind='extend', event_id=self.active['event_id'],
+                        interval=span, recorded_at_s=end, provisional=True,
+                        evidence_ids=payload['evidence_ids'][:], reason=payload['reason'])
         updated.update(lifecycle=intent,refinement=revision,candidate=deepcopy(self.candidate))
         return updated
 
