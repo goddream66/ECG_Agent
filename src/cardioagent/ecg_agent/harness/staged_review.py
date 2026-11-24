@@ -353,6 +353,37 @@ def localize_onset(reviewer, state, transition, aliases, emit, audit):
 
 
 
+def confirm_end_with_evidence(model, counts, emit, audit, view, aliases, *, compact_history=False):
+    """Submit exactly the active event and its arrived confirmation proof."""
+    proof = view['end_evidence']
+    if not proof['can_confirm'] or view['assessment']['interpretation']=='conflict':
+        return dict(status='unlocalized',reason='No current pair of successive contrary intervals after observed support.')
+
+    def confirm(args):
+        if args['decision']=='WAIT':
+            return dict(status='unlocalized',reason=args['reason'])
+        if args['decision']!='CONFIRM_END':
+            raise ValueError('Choose WAIT or CONFIRM_END')
+        left, first, last=(proof[k] for k in ('before','first_against','later_against'))
+        result = dict(status='located',reason=args['reason'],
+                      boundary=dict(kind='bracketed',range_s=[left['window_s'][0],first['window_s'][1]]),
+                      before_id=aliases[left['id']],after_id=aliases[first['id']],
+                      confirmation_evidence_id=aliases[last['id']])
+        if left.get('measurements'):
+            result['support_pair_ids'] = [aliases[row['id']] for row in left['measurements']]
+        return result
+
+    tool=schema('confirm_event_end','Decide whether later evidence confirms the suspected end.',
+                dict(decision=choice(['CONFIRM_END','WAIT']),reason=TEXT),['decision','reason'])
+    return ask(model,counts,emit,audit,view,tool,
+               'Decide if the combined AF or AFL event has ended. Compare the last supported '
+               'interval, first contrary interval and later confirmation. Confirm if these '
+               'measurements support a sustained change. WAIT if recovery, poor reliability '
+               'or conflicting evidence makes the change doubtful. Confirmation time is now; '
+               'the boundary uses the earlier change, even when the exact second is unknown.',confirm,
+               compact_history=compact_history)
+
+
 def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, tools, *, stable=None):
     data=json.loads(measured_event.final_context(state,aliases,ledger)[1]['content'])
     if reviewer.focused_evidence_menu:
@@ -406,33 +437,9 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
     action=intent.get('action')
     refinement=dict(status='not_requested')
     if followup and action=='REQUEST_CLOSE':
-        proof=transition['end_evidence']
-        if proof['can_confirm'] and obs['interpretation']!='conflict':
-            def confirm(args):
-                if args['decision']=='WAIT':
-                    return dict(status='unlocalized',reason=args['reason'])
-                if args['decision']!='CONFIRM_END':
-                    raise ValueError('Choose WAIT or CONFIRM_END')
-                left, first, last=(proof[k] for k in ('before','first_against','later_against'))
-                result = dict(status='located',reason=args['reason'],
-                            boundary=dict(kind='bracketed',range_s=[left['window_s'][0],first['window_s'][1]]),
-                            before_id=aliases[left['id']],after_id=aliases[first['id']],
-                            confirmation_evidence_id=aliases[last['id']])
-                if left.get('measurements'):
-                    result['support_pair_ids'] = [aliases[row['id']] for row in left['measurements']]
-                return result
-            tool=schema('confirm_event_end','Decide whether later evidence confirms the suspected end.',
-                        dict(decision=choice(['CONFIRM_END','WAIT']),reason=TEXT),['decision','reason'])
-            refinement=ask(reviewer.model,reviewer.counts,emit,audit,
-                           dict(window_s=[a,b],open_event=active,assessment=obs,**transition),tool,
-                           'Decide if the combined AF or AFL event has ended. Compare the last supported '
-                           'interval, first contrary interval and later confirmation. Confirm if these '
-                           'measurements support a sustained change. WAIT if recovery, poor reliability '
-                           'or conflicting evidence makes the change doubtful. Confirmation time is now; '
-                           'the boundary uses the earlier change, even when the exact second is unknown.',confirm,
-                           compact_history=reviewer.compact_history)
-        else:
-            refinement=dict(status='unlocalized',reason='No current pair of successive contrary intervals after observed support.')
+        refinement=confirm_end_with_evidence(reviewer.model,reviewer.counts,emit,audit,
+                                             dict(window_s=[a,b],open_event=active,assessment=obs,**transition),
+                                             aliases,compact_history=reviewer.compact_history)
     elif reviewer.boundary_pair_menu and action in ('CREATE_CANDIDATE','CONFIRM_EVENT','REFINE_ONSET'):
         refinement = localize_onset(reviewer, state, transition, aliases, emit, audit)
     elif action in ('CREATE_CANDIDATE','CONFIRM_EVENT','REFINE_ONSET','REQUEST_CLOSE'):
