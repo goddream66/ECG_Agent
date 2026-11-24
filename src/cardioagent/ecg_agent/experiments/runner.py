@@ -106,6 +106,7 @@ def run_job(job):
                     bound_window_choices=job['llm'].get('bound_window_choices',False),
                     direction_only_reference=job['llm'].get('direction_only_reference',False),
                     persistent_event_evidence=job['llm'].get('persistent_event_evidence',False),
+                    adaptive_acquisition=job['llm'].get('adaptive_acquisition',False),
                     compact_final_evidence=job['llm'].get('compact_final_evidence', True),
                     memory_write=job['llm'].get('memory_write', False),
                     memory_retrieve=job['llm'].get('memory_retrieve', False),

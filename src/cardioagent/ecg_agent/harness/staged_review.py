@@ -218,7 +218,7 @@ def retain_end_evidence(state, transition, aliases, ledger):
 
 
 
-def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, tools):
+def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, tools, *, stable=None):
     data=json.loads(measured_event.final_context(state,aliases,ledger)[1]['content'])
     rows={r['id']:r for r in data['measurements']}
     a,b=state['window_s']
@@ -226,10 +226,19 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
         r=rows.get(key,{})
         return (r.get('direction_allowed') and all(type(r['fields'].get(k)) in (int,float) and isfinite(r['fields'][k]) for k in measured_event.PAIR)
                 and r['window_s'][1]<=b and ledger.get(aliases[key])['available_at_s']<=b)
-    obs = assess(reviewer.model, reviewer.counts, emit, audit, data, aliases, usable,
-                 lambda key: ledger.get(aliases[key])['available_at_s'] <= b,
-                 getattr(reviewer, 'window_assessment_mode', 'legacy'), getattr(reviewer, 'window_band_profile', None),
-                 reviewer.compare_rhythm_leads, reviewer.bound_window_choices, reviewer.direction_only_reference)
+    if stable is None:
+        obs = assess(reviewer.model, reviewer.counts, emit, audit, data, aliases, usable,
+                     lambda key: ledger.get(aliases[key])['available_at_s'] <= b,
+                     getattr(reviewer, 'window_assessment_mode', 'legacy'), getattr(reviewer, 'window_band_profile', None),
+                     reviewer.compare_rhythm_leads, reviewer.bound_window_choices, reviewer.direction_only_reference)
+    else:
+        direction, _ = stable
+        key = state['already_acquired_evidence'][0]['evidence_id']
+        obs = dict(status='accepted', interpretation=direction, assessment=ASSESSMENTS[direction],
+                   evidence_ids=[key], directional_ids=[key],
+                   support_intervals=[[a,b]] if direction == 'support' else [],
+                   opposing_intervals=[[a,b]] if direction == 'negative' else [],
+                   reason='The confident primary measurement agrees with the current event state.')
     if obs['status']=='error':
         return dict(action='ACTION_ERROR',decision='ACTION_ERROR',evidence_ids=[],reason=obs['reason'],window_assessment=obs)
     emit('assessments',dict(audit,stage='window',window_s=[a,b],**obs))
@@ -244,7 +253,9 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
     if followup and active:
         transition['end_evidence'] = proof if memory is not None else end_evidence(
             transition['rhythm_by_time'], [a,b], active)
-    intent = choose_action(reviewer.model, reviewer.counts, emit, audit, [a,b], obs, active, candidate, transition, followup)
+    intent = (choose_action(reviewer.model, reviewer.counts, emit, audit, [a,b], obs, active, candidate, transition, followup)
+              if stable is None else dict(status='accepted', action=stable[1], event_id=active['event_id'] if active else None,
+                                          reason=obs['reason']))
     emit('llm_steps',dict(audit,stage='lifecycle',status='lifecycle_result',intent=intent))
     action=intent.get('action')
     refinement=dict(status='not_requested')
@@ -333,6 +344,8 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
     payload=dict(**obs,window_assessment=obs,lifecycle=intent,refinement=refinement,
                  event_action=action or 'LIFECYCLE_ERROR',action=action or 'LIFECYCLE_ERROR',
                  boundary=refinement.get('boundary'),pending=None,decision_source='llm_staged')
+    if stable:
+        payload['decision_source'] = 'stable_primary'
     if memory is not None:
         payload['end_review_memory'] = memory
     if transition is not None:

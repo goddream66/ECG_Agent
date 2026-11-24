@@ -127,9 +127,11 @@ def replay_event_record(cache, record, task, channel, config, score, logs, conte
                                   max_calls=llm_limit if llm_limit is not None else initial_calls + config.review_budget,
                                   cached_model=model_window, evidence_context=context, allow_experimental=boundary_review)
 
-            def call_window(tool, args):
+            def call_window(tool, args, *, trigger_reason=None):
                 lead, a, b = args['lead'], args['start_s'], args['end_s']
-                if react:
+                if trigger_reason is not None:
+                    trigger = trigger_reason
+                elif react:
                     trigger = 'llm_review_request'
                 elif primary is None:
                     trigger = 'scheduled_primary_score'

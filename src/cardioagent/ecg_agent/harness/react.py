@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from cardioagent.ecg_agent.policies.rule_review import decide_event
 from .event_decision import WindowEventDecision, overlaps_current, validate_grounding
-from . import autonomous_decision, split_event, measured_event, staged_review
+from . import active_acquisition, autonomous_decision, split_event, measured_event, staged_review
 
 PROMPT = Path(__file__).resolve().parents[1] / 'prompts/react_review_v1.txt'
 WINDOW_PROMPT = PROMPT.with_name('react_window_decision_v2.txt')
@@ -175,7 +175,7 @@ class ReActReview:
                  compact_final_evidence=True, split_event_review=False, measured_event_review=False, staged_event_review=False,
                  window_assessment_mode='legacy', window_band_profile=None, end_range_prompt=False,
                  confirm_end_with_followup=False, compare_rhythm_leads=False, bound_window_choices=False,
-                 direction_only_reference=False, persistent_event_evidence=False):
+                 direction_only_reference=False, persistent_event_evidence=False, adaptive_acquisition=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -222,6 +222,12 @@ class ReActReview:
         ):
             raise ValueError('Persistent event evidence requires staged end follow-up')
         self.persistent_event_evidence = persistent_event_evidence
+        if type(adaptive_acquisition) is not bool or (
+            adaptive_acquisition and not (persistent_event_evidence and event_review_mode == 'fixed'
+                                          and separate_final_decision)
+        ):
+            raise ValueError('Adaptive acquisition requires fixed review with persistent staged evidence')
+        self.adaptive_acquisition = adaptive_acquisition
         self.staged_event_review = staged_event_review
         self.measured_event_review = measured_event_review or staged_event_review
         self.split_event_review = split_event_review or self.measured_event_review
@@ -393,6 +399,7 @@ class ReActReview:
         if self.memory_retrieve and ledger is None:
             raise ValueError('Memory retrieval requires this review record and task ledger')
         self.identity = identity
+        stable = None
         allowed = ALLOWED | BOUNDARY_TOOLS if self.boundary_tools else ALLOWED
         if self.event_review_mode:
             if review_snapshot is None or ledger is None or call_window is None:
@@ -406,10 +413,24 @@ class ReActReview:
             if self.split_event_review and tracker.active:
                 for field in ('confirmed_support_intervals','opposing_intervals','unknown_intervals'):
                     state['open_event'][field] = deepcopy(tracker.active[field][-3:])
+            if self.adaptive_acquisition:
+                primary = call_window('score_ecgfounder', dict(lead=primary_lead, start_s=start, end_s=end),
+                                      trigger_reason='adaptive_primary')
+                stable = active_acquisition.stable_action(primary, state, self.window_band_profile)
+                allowed = allowed & active_acquisition.SUPPLEMENTARY_TOOLS
+                state['remaining_tool_calls'] = session.max_calls-len(session.calls)
+                state['already_acquired_evidence'] = [{
+                    key: primary[key] for key in ('evidence_id', 'lead', 'window_s', 'status', 'result')
+                }]
             contract = split_event if self.split_event_review else autonomous_decision
             if self.measured_event_review:
                 contract = measured_event
             acquisition = {key: value for key, value in state.items() if key != 'end_review_memory'}
+            if self.adaptive_acquisition:
+                acquisition['recent_windows'] = [
+                    {k: entry[k] for k in ('window_s', 'af_score', 'afl_score') if k in entry}
+                    for entry in self.history[-3:]
+                ]
             messages = [{'role':'system', 'content':contract.prompt(acquisition, 'acquire')},
                         {'role':'user', 'content':json.dumps(acquisition, allow_nan=False)}]
             tools = [tool for tool in session.registry.function_schemas(include_experimental=True)
@@ -419,7 +440,9 @@ class ReActReview:
                 for tool in tools:
                     fn = tool['function']
                     fn['description'] += ' ' + split_event.TOOL_GUIDE[fn['name']]
-            if self.staged_event_review:
+            if self.adaptive_acquisition:
+                messages[0]['content'] = active_acquisition.acquisition_prompt()
+            elif self.staged_event_review:
                 messages[0]['content'] = staged_review.SYSTEM + '\n' + autonomous_decision._fragments()['acquire']['en'] + '\nAfter acquisition you will submit the window assessment, choose a lifecycle action and optionally investigate a boundary. An observed onset is optional.'
                 if self.compare_rhythm_leads:
                     messages[0]['content'] += (' First inspect the current primary ECGFounder scores. A new high score in background '
@@ -455,7 +478,7 @@ class ReActReview:
                                  and r['available_at_s'] <= end}
         stop = 'round_limit'
         failed = False
-        measurement_done = False
+        measurement_done = stable is not None
         acquisition_errors = 0
         acquisition_failed = False
         decision_retries = 0
@@ -489,9 +512,9 @@ class ReActReview:
                                 for key in observed['directional_ids']:
                                     state['recent_window_votes'][key] = observed['interpretation']
                         self.last_action = staged_review.submit(self, state, aliases, ledger, session, emit,
-                            dict(identity, cursor_s=end, step=step), call_window, tools)
+                            dict(identity, cursor_s=end, step=step), call_window, tools, stable=stable)
                         failed = self.last_action['action']=='ACTION_ERROR'
-                        stop = 'ACTION_ERROR' if failed else 'staged_review_complete'
+                        stop = 'ACTION_ERROR' if failed else 'stable_primary' if stable else 'staged_review_complete'
                         break
                     messages = measured_event.final_context(dict(state, remaining_tool_calls=session.max_calls-len(session.calls)), aliases, ledger)
                     tools = [contract.final_tool(state, aliases) if t['function']['name']=='submit_event_decision'

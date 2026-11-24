@@ -13,9 +13,10 @@ from tests.runtime.test_staged_review import act, boundary
 
 
 class EndFollowupTests(unittest.TestCase):
-    def run_persistent_episode(self, observations, score_pairs, *, interrupt_at=None):
+    def run_persistent_episode(self, observations, score_pairs, *, interrupt_at=None, adaptive=False):
         cfg_path = fixture.ROOT/'configs/ecg/react_qwen_followup_close.json'
-        config = dict(json.loads(cfg_path.read_text()), persistent_event_evidence=True)
+        config = dict(json.loads(cfg_path.read_text()), persistent_event_evidence=True,
+                      adaptive_acquisition=adaptive)
         with TemporaryDirectory() as tmp:
             cfg = Path(tmp)/'event_evidence.json'
             cfg.write_text(json.dumps(config))
@@ -60,6 +61,26 @@ class EndFollowupTests(unittest.TestCase):
                           extension['recorded_at_s'], extension['provisional']), ('extend', 1, [0,30], 30, True))
         self.assertEqual(len(requests), len(actions))
         self.assertEqual(result['events'][0]['opposing_intervals'], [[10,20]])
+
+    def test_adaptive_route_preserves_model_control_of_event_changes(self):
+        def observe(finding):
+            return reply('assess_window', dict(finding=finding, evidence_ids=['E1'], reason='primary score'))
+
+        actions = [fixture.FINISH, observe('TARGET_PRESENT'), act('CONFIRM_EVENT', None), boundary('unlocalized'),
+                   fixture.FINISH, observe('TARGET_ABSENT'), act('REQUEST_CLOSE', 1),
+                   fixture.FINISH, observe('TARGET_ABSENT'), act('REQUEST_CLOSE', 1),
+                   reply('confirm_event_end', dict(decision='CONFIRM_END', reason='two later low windows'))]
+        result, trace, updates, _, requests = self.run_persistent_episode(
+            actions, [[.12,.03],[.99,.1],[.99,.1],[.12,.02],[.13,.02]], adaptive=True
+        )
+        self.assertEqual([row['action'] for row in trace],
+                         ['NO_EVENT_CHANGE','CONFIRM_EVENT','CONTINUE_EVENT','REQUEST_CLOSE','REQUEST_CLOSE'])
+        self.assertEqual([row['llm_action']['decision_source'] for row in trace],
+                         ['stable_primary','llm_staged','stable_primary','llm_staged','llm_staged'])
+        self.assertEqual({row['cursor_s'] for row in requests}, {20,40,50})
+        self.assertEqual(result['counts']['model_calls'], 5)
+        self.assertEqual(result['intervals'], [[10,30]])
+        self.assertEqual(updates[2]['event_update']['interval'], [10,30])
 
     def test_paired_view_marks_only_opposite_cotimed_leads(self):
         from cardioagent.ecg_agent.harness.window_semantics import paired_observation_view
