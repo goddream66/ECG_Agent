@@ -9,6 +9,51 @@ from cardioagent.common.io import digest, save_json
 from cardioagent.ecg_agent.llm.providers import LocalQwenModel
 
 
+def profile_decoding(model, items, output):
+    """Time the first forward pass separately from subsequent token generation."""
+    import torch
+
+    results = []
+    for item in items:
+        for index, turn in enumerate(item['turns'], 1):
+            start, first, finish = [torch.cuda.Event(enable_timing=True) for _ in range(3)]
+            waiting = True
+
+            def before(*_):
+                if waiting:
+                    start.record()
+
+            def after(*_):
+                nonlocal waiting
+                if waiting:
+                    first.record()
+                    waiting = False
+
+            model.last_raw = None
+            with model.model.register_forward_pre_hook(before), model.model.register_forward_hook(after):
+                tick = perf_counter()
+                error = None
+                try:
+                    reply = model.complete(turn['messages'], turn['tools'])
+                    function = reply.message['tool_calls'][0]['function']['name']
+                    usage = reply.usage
+                except ValueError as exception:
+                    error = str(exception)
+                    function = None
+                    usage = None
+                finish.record()
+                finish.synchronize()
+                elapsed_ms = (perf_counter() - tick) * 1000
+            if waiting:
+                raise RuntimeError('Model never executed a forward pass')
+            results.append({
+                'case': item['case'], 'turn': index, 'function': function, 'usage': usage, 'error': error,
+                'first_forward_ms': start.elapsed_time(first), 'after_first_forward_ms': first.elapsed_time(finish),
+                'elapsed_ms': elapsed_ms, 'raw_sha256': sha256((model.last_raw or '').encode()).hexdigest(),
+            })
+    save_json(output / 'decoding-profile.json', results)
+
+
 def run(args):
     import torch
     import transformers
@@ -27,6 +72,10 @@ def run(args):
         model.complete(warm['messages'],warm['tools'])
     except ValueError:
         pass
+    if args.profile:
+        profile_decoding(model, items, args.output)
+        save_json(args.output/'complete.json',dict(job=identity | {'mode': 'decoding_profile'},cases=len(items)))
+        return
     for i,item in enumerate(items):
         key=item['case']
         if not all(c.isalnum() or c=='_' for c in key):
@@ -73,6 +122,7 @@ if __name__=='__main__':
     parser.add_argument('--shard',type=int,default=0)
     parser.add_argument('--shards',type=int,default=1)
     parser.add_argument('--limit',type=int,default=3072)
+    parser.add_argument('--profile', action='store_true')
     a=parser.parse_args()
     if not 0<=a.shard<a.shards or not 128<=a.limit<=4096:
         parser.error('Invalid shard or cache budget')
