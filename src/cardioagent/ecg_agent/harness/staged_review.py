@@ -212,6 +212,32 @@ def choose_action(model, counts, emit, audit, window, obs, active, candidate, tr
     return ask(model,counts,emit,audit,data,tool,instruction,lifecycle,compact_history=compact_history)
 
 
+def settled_lifecycle(window, obs, active, candidate, transition):
+    """Forward already accepted observations when there is no event decision to settle."""
+    if candidate is not None or transition.get('pending_question'):
+        return None
+    direction=obs['interpretation']
+    if active is None:
+        if direction!='support':
+            return dict(status='accepted',action='NO_EVENT_CHANGE',event_id=None,
+                        reason='The accepted observation does not support opening an event.',
+                        decision_source='settled_lifecycle')
+        return None
+    a,_=window
+    if direction!='support' or a-active['confirmed_at_s']<120:
+        return None
+    if any(r['window_s'][0]<active['confirmed_at_s'] for r in transition['rhythm_by_time']):
+        return None
+    current=[r for r in transition['rhythm_by_time'] if r['window_s']==window]
+    if len(current)!=2 or len({r['lead'] for r in current})!=2:
+        return None
+    if any(r['reference']['direction']!='support' for r in current):
+        return None
+    return dict(status='accepted',action='CONTINUE_EVENT',event_id=active['event_id'],
+                reason='Two arrived lead measurements support the established event.',
+                decision_source='settled_lifecycle')
+
+
 def acquire_from_menu(reviewer, state, session, call_window, emit, audit):
     while len(session.calls) < session.max_calls:
         if reviewer.focused_evidence_menu and active_acquisition.decisive_pair(
@@ -429,7 +455,11 @@ def submit(reviewer, state, aliases, ledger, session, emit, audit, call_window, 
     if reviewer.evidence_menu and not active:
         corroborated = (obs.get('support_basis') == 'paired_advisory_reference'
                         or active_acquisition.onset_supported(transition['rhythm_by_time'], [a,b]))
-    intent = (choose_action(reviewer.model, reviewer.counts, emit, audit, [a,b], obs, active, candidate, transition, followup,
+    routine = (settled_lifecycle([a,b],obs,active,candidate,transition)
+               if stable is None and reviewer.selective_lifecycle else None)
+    if routine is not None:
+        reviewer.counts['lifecycle_calls_avoided'] = reviewer.counts.get('lifecycle_calls_avoided',0)+1
+    intent = routine or (choose_action(reviewer.model, reviewer.counts, emit, audit, [a,b], obs, active, candidate, transition, followup,
                             corroborated_onset=corroborated, compact_history=reviewer.compact_history)
               if stable is None else dict(status='accepted', action=stable[1], event_id=active['event_id'] if active else None,
                                           reason=obs['reason']))

@@ -114,6 +114,7 @@ def run_job(job):
                     advisory_reference=job['llm'].get('advisory_reference',False),
                     compact_history=job['llm'].get('compact_history',False),
                     accepted_support_memory=job['llm'].get('accepted_support_memory',False),
+                    selective_lifecycle=job['llm'].get('selective_lifecycle',False),
                     compact_final_evidence=job['llm'].get('compact_final_evidence', True),
                     memory_write=job['llm'].get('memory_write', False),
                     memory_retrieve=job['llm'].get('memory_retrieve', False),

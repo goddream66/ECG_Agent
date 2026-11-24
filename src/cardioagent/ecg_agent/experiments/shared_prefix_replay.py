@@ -7,7 +7,7 @@ from pathlib import Path
 
 from cardioagent.common.io import digest, save_json
 from cardioagent.ecg_agent.harness.end_review import advance_end_memory, end_evidence
-from cardioagent.ecg_agent.harness.staged_review import choose_action, confirm_end_with_evidence
+from cardioagent.ecg_agent.harness.staged_review import choose_action, confirm_end_with_evidence, settled_lifecycle
 from cardioagent.ecg_agent.llm.providers import LocalQwenModel
 from cardioagent.ecg_agent.llm.recording import RecordingChatModel
 from cardioagent.ecg_agent.memory.evidence import canonical_hash
@@ -61,7 +61,7 @@ def arrived(row, span):
                 direction=row['reference']['direction'],target_score=row['target_score'])
 
 
-def replay(seed, case, model, emit, persist):
+def replay(seed, case, model, emit, persist, *, selective=False):
     tracker=deepcopy(seed)
     counts=Counter()
     memory={}
@@ -103,7 +103,10 @@ def replay(seed, case, model, emit, persist):
             if not active or intent['event_id']!=active['event_id'] or intent['action']!='REQUEST_CLOSE':
                 raise ValueError('The common fork must begin at the existing close request')
         else:
-            intent=choose_action(model,counts,emit,audit,span,obs,active,state['candidate'],transition,True)
+            routine=settled_lifecycle(span,obs,active,state['candidate'],transition) if selective else None
+            if routine:
+                counts['lifecycle_calls_avoided']+=1
+            intent=routine or choose_action(model,counts,emit,audit,span,obs,active,state['candidate'],transition,True)
         action=intent.get('action')
         refine=dict(status='not_requested')
         if action=='REQUEST_CLOSE':
@@ -122,7 +125,8 @@ def replay(seed, case, model, emit, persist):
         if persist:
             payload['end_review_memory']=memory
         update=tracker.apply(a,b,payload)
-        writes.append(dict(cursor_s=b,action=action,refinement=refine,update=update))
+        writes.append(dict(cursor_s=b,action=action,refinement=refine,update=update,
+                           decision_source=intent.get('decision_source','qwen_lifecycle')))
     events=tracker.finish(tracker.cursor)
     return dict(events=events,intervals=tracker.intervals,counts=dict(counts),writes=writes)
 
@@ -131,7 +135,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     for key in ('input','config','output'):
         p.add_argument('--'+key,type=Path,required=True)
-    p.add_argument('--mode',choices=('rolling','event_memory'),required=True)
+    p.add_argument('--mode',choices=('rolling','event_memory','selective'),required=True)
     args=p.parse_args()
     import torch
     torch.set_num_threads(2)
@@ -156,7 +160,7 @@ def main():
             continue
         steps=[]
         result=replay(seed,case,RecordingChatModel(model,log),lambda tag,row:steps.append([tag,row]),
-                      args.mode=='event_memory')
+                      args.mode!='rolling',selective=args.mode=='selective')
         tmp=path.with_suffix('.partial')
         save_json(tmp,dict(job=job,fork_s=fork,seed_sha256=canonical_hash(seed.__dict__),
                            log_sha256=digest(log) if log.exists() else None,steps=steps,**result))
