@@ -3,6 +3,7 @@ import argparse
 from collections import Counter
 from copy import deepcopy
 import json
+from math import floor, ceil
 from pathlib import Path
 
 from cardioagent.common.io import digest, save_json, write_jsonl
@@ -12,6 +13,7 @@ from cardioagent.ecg_agent.harness.staged_review import TEXT, ask, choice, schem
 from cardioagent.ecg_agent.llm.providers import LocalQwenModel
 from cardioagent.ecg_agent.llm.recording import RecordingChatModel
 from cardioagent.ecg_agent.memory.evidence import EvidenceLedger, canonical_hash
+from cardioagent.ecg_agent.memory.autonomous_events import AutonomousEvents
 from cardioagent.ecg_agent.memory.staged_events import StagedEvents
 from cardioagent.ecg_agent.schemas import EvidenceContext
 
@@ -111,6 +113,85 @@ def replay(data,model,emit):
                 exact_reference_written_and_retrieved=exact, updates=updates, evidence=receipts, counts=dict(counts))
 
 
+def replay_reference_sequence(case, model, emit):
+    """Exercise point writes for missed and consecutive episodes without an archived event action."""
+    starts, ends = case['clip_s']
+    previous_end = starts
+    for a,b in case['intervals_s']:
+        if not previous_end<=a<b<ends:
+            raise ValueError('Reference episodes must be contained, ordered and nonoverlapping')
+        previous_end=b
+    clock=AutonomousEvents('fixed',starts)
+    ledger=EvidenceLedger(EvidenceContext(run_id='reference-sequence-diagnostic',task_id=case['task_id'],
+                          record_id=case['record_id'],manifest_id=case['sha256']))
+    counts=Counter()
+    steps, updates, receipts = [],[],[]
+    for index,interval in enumerate(case['intervals_s'],1):
+        planned_onset=max((floor(interval[0]/10)+1)*10,clock.cursor+10)
+        planned_end=max(ceil(interval[1]/10)*10,planned_onset+10)
+        if planned_end>ends:
+            raise ValueError('Clip does not retain both review opportunities')
+        observed_event_id=None
+        pair=[]
+        for kind,cursor,action in (('onset',planned_onset,'OPEN'),('offset',planned_end,'CLOSE')):
+            start=cursor-10
+            if clock.cursor<start:
+                clock.skip(clock.cursor,start)
+            trace=dict(start_s=start,cursor_s=cursor)
+            visible=[item for item in case['observations'] if item['available_at_s']<=cursor and
+                     cursor-30<item['span_s'][1]<=cursor]
+            finding,item=boundary_decision(model,counts,emit,ledger,trace,clock,kind,
+                                           dict(interval_s=interval,sha256=case['sha256']),visible)
+            receipts.append(item)
+            state=dict(boundary=kind,cursor_s=cursor,model=finding,write='not_submitted')
+            pair.append(state)
+            active=clock.active
+            allowed=(not active if action=='OPEN'
+                     else active is not None and active['event_id']==observed_event_id)
+            if finding['status']!='located' or not allowed:
+                state['write']='invalid_boundary' if finding['status']!='located' else 'wrong_ledger_state'
+                clock.skip(start,cursor)
+                continue
+            # Point submission supplies a boundary only. It does not manufacture positive waveform coverage.
+            written=clock.apply(start,cursor,dict(event_action=action,boundary=finding['boundary'],
+                                support_intervals=[],opposing_intervals=[],pending=None,next_review_s=None,
+                                evidence_ids=[item['evidence_id']],reason=finding['reason']))['event_update']
+            updates.append(written)
+            state.update(write='saved',event_id=written['event_id'])
+            if action=='OPEN':
+                observed_event_id=written['event_id']
+        readback=clock.retrieve(starts,clock.cursor,available_through_s=clock.cursor,limit=1,event_id=observed_event_id)
+        event=readback[0] if readback and observed_event_id is not None else {}
+        correct=([event.get('estimated_start_s'),event.get('estimated_end_s')]==interval and
+                 event.get('final_status')=='CLOSED' and
+                 receipts[-2]['evidence_id'] in event['start_evidence_ids'] and
+                 receipts[-1]['evidence_id'] in event['end_evidence_ids'])
+        steps.append(dict(sequence=index,reference_interval_s=interval,points=pair,retrieved=event,exact=correct))
+    return dict(record_id=case['record_id'],clip_s=case['clip_s'],episodes=steps,counts=dict(counts),
+                event_intervals=clock.intervals,original_events=case['original_events'],
+                updates=updates,evidence=receipts,diagnostic_only=True)
+
+
+def run_cases(args, packets):
+    model=LocalQwenModel(dict(json.loads(args.config.read_bytes()),device='cuda:0'))
+    job=dict(input_sha256=digest(args.input),config_sha256=digest(args.config))
+    for case in packets['cases']:
+        record_id=case['record_id']
+        if not record_id.isdecimal():
+            raise ValueError('Invalid dataset record name')
+        target=args.output/record_id
+        target.mkdir()
+        recorder=RecordingChatModel(model,target/'qwen_calls.jsonl.gz')
+        log=[]
+        report=replay_reference_sequence(case,recorder,lambda tag,row:log.append(dict(tag=tag,**row)))
+        save_json(target/'result.json',dict(job=job,**report))
+        write_jsonl(target/'reference_evidence.jsonl',report['evidence'])
+        write_jsonl(target/'event_updates.jsonl',report['updates'])
+        write_jsonl(target/'llm_steps.jsonl',log)
+        print(record_id,[e['exact'] for e in report['episodes']],flush=True)
+    save_json(args.output/'complete.json',dict(job=job,records=[case['record_id'] for case in packets['cases']]))
+
+
 if __name__=='__main__':
     import torch
     p = argparse.ArgumentParser(description=__doc__)
@@ -120,12 +201,16 @@ if __name__=='__main__':
     torch.set_num_threads(2)
     torch.set_num_interop_threads(1)
     args.output.mkdir(parents=True,exist_ok=False)
-    model = RecordingChatModel(LocalQwenModel(dict(json.loads(args.config.read_bytes()),device='cuda:0')),
-                               args.output/'qwen_calls.jsonl.gz')
-    steps = []
-    report = replay(json.loads(args.input.read_bytes()),model,lambda tag,row:steps.append(dict(tag=tag,**row)))
-    save_json(args.output/'result.json',dict(input_sha256=digest(args.input),config_sha256=digest(args.config),**report))
-    write_jsonl(args.output/'reference_evidence.jsonl',report['evidence'])
-    write_jsonl(args.output/'event_updates.jsonl',report['updates'])
-    write_jsonl(args.output/'llm_steps.jsonl',steps)
-    print('reference_written_and_retrieved',report['exact_reference_written_and_retrieved'],flush=True)
+    packets=json.loads(args.input.read_bytes())
+    if 'cases' in packets:
+        run_cases(args,packets)
+    else:
+        model = RecordingChatModel(LocalQwenModel(dict(json.loads(args.config.read_bytes()),device='cuda:0')),
+                                   args.output/'qwen_calls.jsonl.gz')
+        steps = []
+        report = replay(packets,model,lambda tag,row:steps.append(dict(tag=tag,**row)))
+        save_json(args.output/'result.json',dict(input_sha256=digest(args.input),config_sha256=digest(args.config),**report))
+        write_jsonl(args.output/'reference_evidence.jsonl',report['evidence'])
+        write_jsonl(args.output/'event_updates.jsonl',report['updates'])
+        write_jsonl(args.output/'llm_steps.jsonl',steps)
+        print('reference_written_and_retrieved',report['exact_reference_written_and_retrieved'],flush=True)
