@@ -40,14 +40,17 @@ class FocusQwen(BatchQwen):
     def review(self, observations, stage):
         name, field, instruction = ('choose_review', 'route', ROUTE) if stage == 'route' else (
             'select_intervals', 'option', COMMIT)
-        tools = [schema(name, 'Select one available choice.', {field: {'type': 'string'}}, [field])]
         tokenizer = self.adapter.tokenizer
-        messages = [tokenizer.apply_chat_template([
-            {'role': 'system', 'content': instruction},
-            {'role': 'user', 'content': encoded(observation)},
-        ], tools=tools, tokenize=False, add_generation_prompt=True, enable_thinking=False)
-                    for observation in observations]
-        for raw, observation in zip(self.forward(messages), observations, strict=True):
+
+        def render(observation):
+            allowed = {'type': 'string', 'enum': observation['available']}
+            tools = [schema(name, 'Select exactly one listed value.', {field: allowed}, [field])]
+            return tokenizer.apply_chat_template([
+                {'role': 'system', 'content': instruction},
+                {'role': 'user', 'content': encoded(observation)},
+            ], tools=tools, tokenize=False, add_generation_prompt=True, enable_thinking=False)
+
+        def decode(raw, observation):
             try:
                 calls = parse_qwen_tool_reply(raw).get('tool_calls', [])
                 fn, = calls
@@ -55,9 +58,20 @@ class FocusQwen(BatchQwen):
                 if (fn['function']['name'] != name or set(args) != {field}
                         or args[field] not in observation['available']):
                     raise ValueError('Invalid or unavailable choice')
-                yield dict(raw=raw, choice=args[field])
+                return dict(raw=raw, choice=args[field])
             except (ValueError, KeyError, TypeError) as error:
-                yield dict(raw=raw, error=str(error))
+                return dict(raw=raw, error=str(error))
+
+        replies = [decode(raw, item) for raw,item in zip(
+            self.forward([render(item) for item in observations]), observations, strict=True)]
+        failed = [i for i,reply in enumerate(replies) if 'error' in reply]
+        corrections = [dict(observations[i], correction='The previous call had an invalid choice. '
+                            'Use one value from the tool enum.') for i in failed]
+        if corrections:
+            recovered = self.forward([render(item) for item in corrections])
+            for i,raw in zip(failed, recovered, strict=True):
+                replies[i] = dict(decode(raw, observations[i]), first_attempt=replies[i])
+        return iter(replies)
 
 
 @dataclass
@@ -221,7 +235,13 @@ def evaluate(model, task, label, score, folder, microbatch):
                 candidates, routes, comparisons, chosen, strict=True):
             counts['available_partial_windows'] += observation['scan']['n_partial']
             counts['route_'+observation['route']] += 1
-            counts['model_calls'] += 1 + int(not route.get('deterministic'))
+            retries = int('first_attempt' in route) + int('first_attempt' in final)
+            counts['model_calls'] += 1 + int(not route.get('deterministic')) + retries
+            counts['retries'] += retries
+            counts['deterministic_routes'] += int(bool(route.get('deterministic')))
+            if not route.get('deterministic') and route.get('choice') not in (None, 'coarse'):
+                counts['optional_refinement'] += int('coarse' in observation['scan']['available'])
+            counts['coarse_pruned'] += int('coarse' not in observation['scan']['available'])
             counts['invalid_route'] += int('error' in route)
             counts['invalid_commit'] += int('error' in final)
             counts['extra_diagnostics'] += len(measurements)
