@@ -15,12 +15,17 @@ from cardioagent.ecg_agent.memory.autonomous_events import AutonomousEvents, mer
 
 
 ROUTE = (
-    'Choose how to check a candidate AF episode before writing it. The coarse windows are 30 seconds. '
-    'AF fraction is the part of each window labeled AF. A nonzero fraction can be a short real event. '
-    'Choose coarse for an adequately localized candidate. Choose edges_5 to refine partial edges; '
-    'choose partial_5 when internal partially occupied windows could hide a break; '
-    'choose short_1 when a small isolated episode needs one-second measurements. '
-    'Only choose a route listed in available. Call choose_review once with the route string.'
+    'Choose a measurement that can localize AF episodes before recording them. The candidate is a search '
+    'range; it can contain several episodes separated by a gap. AF fraction describes the occupied part '
+    'of a window, and a nonzero fraction can be a short real episode. Use available routes only.\n'
+    'If short_1 is available for a small isolated region, use it to locate short episodes. '
+    'With any internal partial windows, use partial_5 to search for breaks; edges_5 only checks the ends. '
+    'If partial_1 is available, consider it when the partially occupied windows may hide very short spells or gaps. '
+    'With only partial edges, use edges_5 when they contribute appreciable boundary uncertainty. '
+    'Use coarse when no refinement is needed, for example, a fully occupied candidate or a few seconds '
+    'of uncertainty across a long episode. The coarse_iou_upper_estimate is the occupied fraction of the '
+    'candidate; low values signal that recording the whole candidate may not meet IoU 0.5. '
+    'Call choose_review once.'
 )
 COMMIT = (
     'You are writing AF event intervals to an evidence ledger. The window labels are based on reference '
@@ -103,9 +108,17 @@ def scan_summary(region):
         options.append('edges_5')
     if any(partial(row) for row in rows[1:-1]):
         options.append('partial_5')
+        if len(candidates) <= 6:
+            options.append('partial_1')
     expected = sum(estimated_time(row) for row in rows)
     if candidates and len(rows) <= 2 and expected < 15:
         options.append('short_1')
+    upper_iou = expected / (region.end-region.start)
+    # Any episode inside the coarse candidate is at most the observed occupied time.
+    # Allow a margin for the three-decimal label quantization.
+    if len(options) > 1 and upper_iou < .49:
+        options.remove('coarse')
+    query_count = sum(partial(row) for row in (rows if len(rows) == 1 else (rows[0], rows[-1])))
     return dict(observed_through_s=region.cursor, candidate=[region.start, region.end],
                 preceding_zero_s=None if region.preceding is None else region.preceding['t0'],
                 following_zero_s=None if region.following is None else region.following['t0'],
@@ -114,7 +127,12 @@ def scan_summary(region):
                 n_interior_partial=sum(partial(row) for row in rows[1:-1]),
                 partial_windows=[[row['t0'], row['label']['af_frac']]
                                  for row in (candidates if len(candidates) <= 12 else candidates[:6]+candidates[-6:])],
-                approximate_af_seconds=round(expected, 2), available=options)
+                approximate_af_seconds=round(expected, 2),
+                coarse_iou_upper_estimate=round(upper_iou, 3),
+                measurement_cost={key: cost for key, cost in (
+                    ('coarse', 0), ('edges_5', 6*query_count), ('partial_5', 6*len(candidates)),
+                    ('partial_1', 30*len(candidates)), ('short_1', 30*len(candidates))) if key in options},
+                available=options)
 
 
 def refine(region, choice, label, task):
@@ -124,7 +142,7 @@ def refine(region, choice, label, task):
         if not partial(row) or choice == 'coarse' or (choice == 'edges_5' and not edge):
             expanded.append(row)
             continue
-        step = 1 if choice == 'short_1' else 5
+        step = 1 if choice in ('short_1', 'partial_1') else 5
         for offset in range(0, 30, step):
             start = row['t0'] + offset
             end = min(start+step, row['t1'])
@@ -176,15 +194,15 @@ def evaluate(model, task, label, score, folder, microbatch):
     summaries = [scan_summary(region) for region in candidates]
     ambiguous = [s for s in summaries if len(s['available']) > 1]
     choices = iter(decisions(model, ambiguous, 'route', microbatch))
-    routes = [next(choices) if len(s['available']) > 1 else dict(choice='coarse', deterministic=True)
+    routes = [next(choices) if len(s['available']) > 1 else dict(choice=s['available'][0], deterministic=True)
               for s in summaries]
     comparisons, commits = [], []
     for summary, route, region in zip(summaries, routes, candidates, strict=True):
-        selected_route = route.get('choice', 'coarse')
+        selected_route = route.get('choice', summary['available'][0])
         coarse = [[region.start, region.end]]
         refined, measurements = refine(region, selected_route, label, task)
-        options = {'coarse': coarse}
-        if refined != coarse and measurements:
+        options = {'coarse': coarse} if 'coarse' in summary['available'] else {}
+        if measurements and (refined != coarse or not options):
             options['refined'] = refined
         observation = dict(observed_through_s=region.cursor, scan=summary, options=options,
                            route=selected_route, measurements=len(measurements),
@@ -210,7 +228,7 @@ def evaluate(model, task, label, score, folder, microbatch):
             option = final.get('choice', 'drop')
             spans = observation['options'].get(option, [])
             if spans:
-                coarse_for_selected.extend(observation['options']['coarse'])
+                coarse_for_selected.append([region.start, region.end])
             counts['selected_'+option] += 1
             updates = publish(tracker, region, spans, option)
             out.write(encoded(dict(observation=observation, route=route, evidence=measurements,
