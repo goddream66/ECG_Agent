@@ -36,12 +36,22 @@ COMMIT = (
     'A short supported interval is still an event. Choose drop only if there is no episode worth '
     'recording. Submit an available option using select_intervals. Do not invent boundary times.'
 )
+COMMIT_COARSE = (
+    'You are writing AF event intervals to an evidence ledger. Your only rhythm evidence is the '
+    'reference-derived labels and AF fractions of the arrived 30-second windows. The AF fraction '
+    'describes how much of a window contains AF. Its position within the window is unknown. '
+    'Choose coarse to record the observed candidate using the displayed window edges. '
+    'Choose drop only if the observed windows do not support recording an episode. '
+    'A short supported interval is still an event. Submit one option using select_intervals.'
+)
 
 
 class FocusQwen(BatchQwen):
     def review(self, observations, stage):
         name, field, instruction = ('choose_review', 'route', ROUTE) if stage == 'route' else (
             'select_intervals', 'option', COMMIT)
+        if stage == 'commit_coarse':
+            instruction = COMMIT_COARSE
         tokenizer = self.adapter.tokenizer
 
         def render(observation):
@@ -232,10 +242,12 @@ def preview_options(options):
             for name,spans in options.items()}
 
 
-def evaluate(model, task, label, score, folder, microbatch):
+def evaluate(model, task, label, score, folder, microbatch, *, coarse_only=False):
     chunks = make_chunks(task, label)
     candidates = list(regions(chunks))
     summaries = [scan_summary(region) for region in candidates]
+    if coarse_only:
+        summaries = [dict(summary, measurement_cost={'coarse': 0}, available=['coarse']) for summary in summaries]
     ambiguous = [s for s in summaries if len(s['available']) > 1]
     choices = iter(decisions(model, ambiguous, 'route', microbatch))
     routes = [next(choices) if len(s['available']) > 1 else dict(choice=s['available'][0], deterministic=True)
@@ -244,7 +256,7 @@ def evaluate(model, task, label, score, folder, microbatch):
     for summary, route, region in zip(summaries, routes, candidates, strict=True):
         selected_route = route.get('choice', summary['available'][0])
         coarse = [[region.start, region.end]]
-        refined, measurements = refine(region, selected_route, label, task)
+        refined, measurements = ([], []) if coarse_only else refine(region, selected_route, label, task)
         options = {'coarse': coarse} if 'coarse' in summary['available'] else {}
         if measurements and (refined != coarse or not options):
             options['refined'] = refined
@@ -253,7 +265,7 @@ def evaluate(model, task, label, score, folder, microbatch):
                            available=list(options)+['drop'])
         comparisons.append((observation, measurements))
         commits.append(dict(observation, options=preview_options(options)))
-    chosen = decisions(model, commits, 'commit', microbatch)
+    chosen = decisions(model, commits, 'commit_coarse' if coarse_only else 'commit', microbatch)
     tracker = AutonomousEvents('fixed', task['t0'])
     counts = Counter(coarse_windows=len(chunks), candidate_regions=len(candidates), available_partial_windows=0)
     folder.mkdir(parents=True, exist_ok=True)
@@ -309,10 +321,13 @@ def main():
     for field in ('input', 'config', 'output'):
         parser.add_argument('--'+field, required=True, type=Path)
     parser.add_argument('--microbatch', type=int, default=20)
+    parser.add_argument('--coarse-only', action='store_true', help='Use only the initial 30-second diagnostic windows')
     args = parser.parse_args()
     tasks = json.loads(args.input.read_bytes())['cases']
     config = json.loads(args.config.read_bytes())
     prov = dict(input_sha256=sha(args.input), config_sha256=sha(args.config), code_sha256=sha(Path(__file__)))
+    if args.coarse_only:
+        prov['evidence_mode'] = 'scan_30s_only'
     model = FocusQwen(config, args.microbatch, 'Scroll')
     args.output.mkdir(parents=True, exist_ok=True)
     for task in tasks:
@@ -324,7 +339,7 @@ def main():
                 raise ValueError('Input or log changed for '+task['id'])
             continue
         started = perf_counter()
-        result = evaluate(model, task, classify_rhythm, score, folder, args.microbatch)
+        result = evaluate(model, task, classify_rhythm, score, folder, args.microbatch, coarse_only=args.coarse_only)
         result.update(provenance=prov, total_s=perf_counter()-started)
         atomic_json(receipt, result)
         print(task['id'], round(result['score'], 4), round(result['same_selected_coarse_score'], 4),
