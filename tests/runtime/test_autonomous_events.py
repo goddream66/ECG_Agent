@@ -51,7 +51,9 @@ class EpisodeTests(unittest.TestCase):
             cache, scores = Path(job['cache']), Path(job['scores'])
             (cache/'00001.windows.jsonl').write_text('\n'.join(map(json.dumps, rows)))
             np.save(cache/'00001.npy', np.ones((2*n,5000), dtype=np.float32))
-            np.save(scores/'00001.npy', np.repeat(score_pairs,2,axis=0) if score_pairs is not None else np.tile([.1,.95], (2*n,1)))
+            supplied_scores = np.asarray(score_pairs) if score_pairs is not None else np.tile([.1,.95], (n,1))
+            by_lead = supplied_scores.reshape(2*n, 2) if supplied_scores.shape == (n,2,2) else np.repeat(supplied_scores,2,axis=0)
+            np.save(scores/'00001.npy', by_lead)
             wave = np.sin(np.arange(n*2500)/8.)
             if future is not None:
                 wave[2500:] = future

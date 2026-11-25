@@ -131,6 +131,7 @@ def build_chat_model(config):
     c.pop('selective_lifecycle', None)
     c.pop('chronological_history_ids', None)
     c.pop('acquire_or_assess', None)
+    c.pop('check_other_lead_on_abstention', None)
     c.pop('window_assessment_mode', None)
     c.pop('window_band_profile', None)
     c.pop('separate_final_decision', None)

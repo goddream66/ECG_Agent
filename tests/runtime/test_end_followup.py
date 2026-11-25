@@ -37,13 +37,18 @@ class EndFollowupTests(unittest.TestCase):
         _, proof = step(20, lows, 'negative', memory)
         self.assertTrue(proof['can_confirm'])
     def run_persistent_episode(self, observations, score_pairs, *, interrupt_at=None, adaptive=False, menu=False,
-                               focused=False, pairs=False, advisory=False, joint=False):
+                               focused=False, pairs=False, advisory=False, joint=False,
+                               check_other_lead_on_abstention=False, max_tool_calls=None):
         name = 'react_qwen_review_pilot.json' if advisory else 'react_qwen_followup_close.json'
         cfg_path = fixture.ROOT/'configs/ecg'/name
         config = dict(json.loads(cfg_path.read_text()), persistent_event_evidence=True,
                       adaptive_acquisition=adaptive or menu or focused or pairs,
                       evidence_menu=menu or focused or pairs, focused_evidence_menu=focused or pairs,
                       boundary_pair_menu=pairs, advisory_reference=advisory, acquire_or_assess=joint)
+        if check_other_lead_on_abstention:
+            config['check_other_lead_on_abstention'] = True
+        if max_tool_calls is not None:
+            config['llm_tool_max_calls'] = max_tool_calls
         with TemporaryDirectory() as tmp:
             cfg = Path(tmp)/'event_evidence.json'
             cfg.write_text(json.dumps(config))
@@ -199,6 +204,46 @@ class EndFollowupTests(unittest.TestCase):
         self.assertEqual(result['counts']['model_calls'], 1)
         self.assertEqual(trace[0]['action'], 'NO_EVENT_CHANGE')
         self.assertEqual(sum(row['status']=='stage_rejected' for row in steps), 2)
+
+    def test_abstention_checks_arrived_other_lead_and_preserves_model_control(self):
+        def vote(finding, ids):
+            return reply('assess_window', dict(finding=finding, evidence_ids=ids, reason='current measurements'))
+
+        prefix = [reply('request_more_evidence', dict(option='compare_current_leads', reason='corroborate onset')),
+                  vote('TARGET_PRESENT', ['E1', 'E2']), act('CONFIRM_EVENT', None), vote('CANNOT_TELL', ['E1'])]
+        scores = [[[.94, .01], [.96, .01]], [[.667, .01], [.883, .01]]]
+        for finding, ids, intent, expected_end in (
+            ('TARGET_PRESENT', ['E2'], 'CONTINUE_EVENT', 20),
+            ('CANNOT_TELL', ['E1', 'E2'], 'HOLD_EVENT', 10),
+        ):
+            actions = prefix + [vote(finding, ids), act(intent, 1)]
+            result, trace, updates, steps, requests = self.run_persistent_episode(
+                actions, scores, pairs=True, joint=True, check_other_lead_on_abstention=True)
+            check, = (step for step in steps if step.get('phase') == 'abstention_lead_check')
+            self.assertEqual(check['arguments'], {'lead':'ECG2', 'start_s':10.0, 'end_s':20.0})
+            self.assertEqual(check['cursor_s'], 20)
+            self.assertEqual(trace[-1]['action'], intent)
+            self.assertEqual(result['intervals'], [[0, expected_end]])
+            self.assertEqual(result['counts']['model_calls'], 4)
+            self.assertEqual(requests[-2]['tools'][0]['function']['name'], 'assess_window')
+            if finding == 'TARGET_PRESENT':
+                self.assertIn(check['evidence_id'], trace[-1]['llm_action']['window_assessment']['directional_ids'])
+                self.assertEqual(updates[-1]['event_update']['interval'], [0,20])
+            else:
+                self.assertIsNone(updates[-1]['event_update'])
+
+    def test_abstention_cannot_spend_past_budget_and_invalid_reassessment_preserves_it(self):
+        abstain = reply('assess_window', dict(finding='CANNOT_TELL', evidence_ids=['E1'], reason='inconclusive'))
+        fake_id = reply('assess_window', dict(finding='TARGET_PRESENT', evidence_ids=['future'], reason='not visible'))
+        scores = [[[.667, .01], [.883, .01]]]
+        for budget, actions in ((1, [abstain]), (2, [abstain, fake_id, fake_id])):
+            result, trace, _, steps, _ = self.run_persistent_episode(
+                [*actions, act('NO_EVENT_CHANGE', None)], scores, pairs=True, joint=True,
+                check_other_lead_on_abstention=True, max_tool_calls=budget)
+            self.assertEqual(result['counts']['model_calls'], budget)
+            self.assertEqual(result['intervals'], [])
+            self.assertEqual(trace[0]['decision'], 'UNCERTAIN')
+            self.assertEqual(sum(step['status'] == 'prior_assessment_retained' for step in steps), budget-1)
 
     def test_focused_export_ends_at_last_supported_interval(self):
         actions = [

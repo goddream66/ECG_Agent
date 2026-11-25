@@ -179,7 +179,7 @@ class ReActReview:
                  evidence_menu=False, focused_evidence_menu=False, boundary_pair_menu=False,
                  advisory_reference=False, compact_history=False, accepted_support_memory=False,
                  selective_lifecycle=False, chronological_history_ids=False,
-                 acquire_or_assess=False):
+                 acquire_or_assess=False, check_other_lead_on_abstention=False):
         if type(max_rounds) is not int or not 1 <= max_rounds <= 16:
             raise ValueError('max_rounds must be 1..16')
         if type(history_windows) is not int or not 0 <= history_windows <= 24:
@@ -241,6 +241,9 @@ class ReActReview:
         if type(acquire_or_assess) is not bool or (acquire_or_assess and not focused_evidence_menu):
             raise ValueError('Joint acquisition and assessment require the focused evidence menu')
         self.acquire_or_assess = acquire_or_assess
+        if type(check_other_lead_on_abstention) is not bool or (check_other_lead_on_abstention and not acquire_or_assess):
+            raise ValueError('The abstention lead check requires joint acquisition and assessment')
+        self.check_other_lead_on_abstention = check_other_lead_on_abstention
         if type(boundary_pair_menu) is not bool or (boundary_pair_menu and not focused_evidence_menu):
             raise ValueError('The boundary pair menu requires focused evidence acquisition')
         self.boundary_pair_menu = boundary_pair_menu

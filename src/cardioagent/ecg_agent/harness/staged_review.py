@@ -451,6 +451,7 @@ def assessment_data(reviewer, state, aliases, ledger):
 def assess_with_checks(reviewer, state, aliases, ledger, session, emit, audit, call_window):
     end = state['window_s'][1]
     can_acquire = reviewer.acquire_or_assess
+    initial_abstention = None
     while True:
         acquisition = None
         if (can_acquire and len(session.calls) < session.max_calls and not active_acquisition.decisive_pair(
@@ -473,16 +474,34 @@ def assess_with_checks(reviewer, state, aliases, ledger, session, emit, audit, c
                      reviewer.compare_rhythm_leads, reviewer.bound_window_choices, reviewer.direction_only_reference,
                      advisory_reference=reviewer.advisory_reference, compact_history=reviewer.compact_history,
                      acquisition=acquisition)
-        if obs['status']=='acquire':
-            args = acquisition['options'][obs['option']].copy()
+        option = obs.get('option') if obs['status'] == 'acquire' else None
+        trigger = 'joint_assessment_requested'
+        phase = 'request_more_evidence'
+        if (reviewer.check_other_lead_on_abstention and initial_abstention is None and acquisition
+                and obs.get('interpretation') == 'unavailable' and 'compare_current_leads' in acquisition['options']):
+            initial_abstention = (obs, data, rows)
+            option = 'compare_current_leads'
+            trigger = 'abstention_other_lead'
+            phase = 'abstention_lead_check'
+            # Give the model one opportunity to reassess the new measurements.
+            can_acquire = False
+        if option is not None:
+            args = acquisition['options'][option].copy()
             name = args.pop('tool')
-            row = call_window(name, args, trigger_reason='joint_assessment_requested')
+            row = call_window(name, args, trigger_reason=trigger)
             aliases[f'E{len(session.calls)}'] = row['evidence_id']
-            emit('llm_steps', dict(audit, phase='request_more_evidence', status='observed',
+            emit('llm_steps', dict(audit, phase=phase, status='observed',
                                    action=name, arguments=args, evidence_id=row['evidence_id']))
+            if initial_abstention is not None and row['status'] != 'ok':
+                emit('llm_steps', dict(audit, phase=phase, status='prior_assessment_retained', cause=row['status']))
+                return initial_abstention
         elif obs['status']=='error' and acquisition:
             # An unsuccessful request does not discard the observations already acquired.
             can_acquire = False
+        elif obs['status'] == 'error' and initial_abstention is not None:
+            emit('llm_steps', dict(audit, phase='abstention_lead_check', status='prior_assessment_retained',
+                                   cause='invalid_reassessment'))
+            return initial_abstention
         else:
             return obs, data, rows
 

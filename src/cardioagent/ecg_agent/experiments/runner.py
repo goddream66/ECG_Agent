@@ -111,6 +111,7 @@ def run_job(job):
                     evidence_menu=job['llm'].get('evidence_menu',False),
                     focused_evidence_menu=job['llm'].get('focused_evidence_menu',False),
                     acquire_or_assess=job['llm'].get('acquire_or_assess',False),
+                    check_other_lead_on_abstention=job['llm'].get('check_other_lead_on_abstention', False),
                     boundary_pair_menu=job['llm'].get('boundary_pair_menu',False),
                     advisory_reference=job['llm'].get('advisory_reference',False),
                     compact_history=job['llm'].get('compact_history',False),
