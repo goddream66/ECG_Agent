@@ -19,9 +19,11 @@ ROUTE = (
     'range; it can contain several episodes separated by a gap. AF fraction describes the occupied part '
     'of a window, and a nonzero fraction can be a short real episode. Use available routes only.\n'
     'If short_1 is available for a small isolated region, use it to locate short episodes. '
-    'With any internal partial windows, use partial_5 to search for breaks; edges_5 only checks the ends. '
+    'With internal partial windows, prefer zoom_partial to find brief breaks; partial_5 is a cheaper '
+    'option if a break is large enough to appear as an entire empty five-second window. '
     'If partial_1 is available, consider it when the partially occupied windows may hide very short spells or gaps. '
-    'With only partial edges, use edges_5 when they contribute appreciable boundary uncertainty. '
+    'With only partial edges, use edges_5 for coarse localization or zoom_edges for a small episode '
+    'whose boundaries need more precision. Zoom routes repeatedly split only mixed-label windows. '
     'Use coarse when no refinement is needed, for example, a fully occupied candidate or a few seconds '
     'of uncertainty across a long episode. The coarse_iou_upper_estimate is the occupied fraction of the '
     'candidate; low values signal that recording the whole candidate may not meet IoU 0.5. '
@@ -120,8 +122,11 @@ def scan_summary(region):
     options = ['coarse']
     if partial(rows[0]) or partial(rows[-1]):
         options.append('edges_5')
+        options.append('zoom_edges')
     if any(partial(row) for row in rows[1:-1]):
-        options.append('partial_5')
+        # Measured positive time on both sides of a partial interior window
+        # leaves an unlocalized break. A single coarse span cannot express it.
+        options = ['zoom_partial', 'partial_5']
         if len(candidates) <= 6:
             options.append('partial_1')
     expected = sum(estimated_time(row) for row in rows)
@@ -130,7 +135,7 @@ def scan_summary(region):
     upper_iou = expected / (region.end-region.start)
     # Any episode inside the coarse candidate is at most the observed occupied time.
     # Allow a margin for the three-decimal label quantization.
-    if len(options) > 1 and upper_iou < .49:
+    if 'coarse' in options and len(options) > 1 and upper_iou < .49:
         options.remove('coarse')
     query_count = sum(partial(row) for row in (rows if len(rows) == 1 else (rows[0], rows[-1])))
     return dict(observed_through_s=region.cursor, candidate=[region.start, region.end],
@@ -145,16 +150,40 @@ def scan_summary(region):
                 coarse_iou_upper_estimate=round(upper_iou, 3),
                 measurement_cost={key: cost for key, cost in (
                     ('coarse', 0), ('edges_5', 6*query_count), ('partial_5', 6*len(candidates)),
-                    ('partial_1', 30*len(candidates)), ('short_1', 30*len(candidates))) if key in options},
+                    ('partial_1', 30*len(candidates)), ('short_1', 30*len(candidates)),
+                    ('zoom_edges', f'{2*query_count} initial queries, then split mixed windows'),
+                    ('zoom_partial', f'{2*len(candidates)} initial queries, then split mixed windows')
+                ) if key in options},
                 available=options)
 
 
 def refine(region, choice, label, task):
     expanded, measurements = [], []
+
+    def measure(start, end):
+        if end > region.cursor:
+            raise ValueError('Requested window is ahead of the available cursor')
+        item = dict(t0=start, t1=end, label=label(task['record'], task['pn_dir'], start, end))
+        measurements.append(item)
+        return item
+
+    def zoom(row):
+        fraction = row['label']['af_frac']
+        start, end = row['t0'], row['t1']
+        if not 0 < fraction < 1 or end-start <= .25:
+            expanded.append(row)
+            return
+        midpoint = start+(end-start)/2
+        zoom(measure(start, midpoint))
+        zoom(measure(midpoint, end))
+
     for i, row in enumerate(region.positive):
         edge = i in (0, len(region.positive)-1)
-        if not partial(row) or choice == 'coarse' or (choice == 'edges_5' and not edge):
+        if not partial(row) or choice == 'coarse' or (choice in ('edges_5', 'zoom_edges') and not edge):
             expanded.append(row)
+            continue
+        if choice in ('zoom_edges', 'zoom_partial'):
+            zoom(row)
             continue
         step = 1 if choice in ('short_1', 'partial_1') else 5
         for offset in range(0, 30, step):
@@ -162,12 +191,7 @@ def refine(region, choice, label, task):
             end = min(start+step, row['t1'])
             if start >= end:
                 break
-            if end > region.cursor:
-                raise ValueError('Requested window is ahead of the available cursor')
-            label_out = label(task['record'], task['pn_dir'], start, end)
-            item = dict(t0=start, t1=end, label=label_out)
-            expanded.append(item)
-            measurements.append(item)
+            expanded.append(measure(start, end))
     spans = merge_spans((row['t0'], row['t1']) for row in expanded if row['label']['af_frac'] > 0)
     return spans, measurements
 
@@ -202,6 +226,12 @@ def decisions(model, items, stage, size):
         yield from model.review(items[i:i+size], stage)
 
 
+def preview_options(options):
+    return {name: dict(interval_count=len(spans), total_s=round(sum(b-a for a,b in spans), 3),
+                       examples=spans if len(spans)<=8 else spans[:4]+spans[-4:])
+            for name,spans in options.items()}
+
+
 def evaluate(model, task, label, score, folder, microbatch):
     chunks = make_chunks(task, label)
     candidates = list(regions(chunks))
@@ -222,7 +252,7 @@ def evaluate(model, task, label, score, folder, microbatch):
                            route=selected_route, measurements=len(measurements),
                            available=list(options)+['drop'])
         comparisons.append((observation, measurements))
-        commits.append(observation)
+        commits.append(dict(observation, options=preview_options(options)))
     chosen = decisions(model, commits, 'commit', microbatch)
     tracker = AutonomousEvents('fixed', task['t0'])
     counts = Counter(coarse_windows=len(chunks), candidate_regions=len(candidates), available_partial_windows=0)
@@ -251,7 +281,8 @@ def evaluate(model, task, label, score, folder, microbatch):
                 coarse_for_selected.append([region.start, region.end])
             counts['selected_'+option] += 1
             updates = publish(tracker, region, spans, option)
-            out.write(encoded(dict(observation=observation, route=route, evidence=measurements,
+            out.write(encoded(dict(observation=observation, prompt_options=preview_options(observation['options']),
+                                   route=route, evidence=measurements,
                                    selection=final, event_updates=updates))+'\n')
     result = tracker.finish(task['t1'])
     intervals = [span for event in result for span in event['reported_intervals']]
