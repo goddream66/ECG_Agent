@@ -1,4 +1,4 @@
-"""Audit exact LTAFDB reference-boundary transfer and event memory across all records."""
+"""Audit exact reference-boundary transfer and event memory across all records."""
 import argparse
 from collections import Counter
 import json
@@ -16,7 +16,7 @@ from cardioagent.ecg_agent.schemas import EvidenceContext
 
 TOOLS=[schema('store_reference_boundary','Submit the exact annotated event boundary.',
               dict(time_s=dict(type='number'),reference_id=dict(type='string')),['time_s','reference_id'])]
-PROMPT=('Record an exact annotated LTAFDB boundary for an AF/AFL event. '
+PROMPT=('Record an exact annotated {dataset} boundary for an AF/AFL event. '
         'Copy reference_evidence.time_s into time_s and reference_evidence.id into reference_id. '
         'The currently available time is the clock, and must never replace the annotated time. '
         'Do not round. Submit the offered tool with only these two fields.')
@@ -47,10 +47,11 @@ def boundary_targets(case):
 
 
 class BatchQwen:
-    def __init__(self,config,batch_size):
+    def __init__(self,config,batch_size,dataset):
         self.adapter=LocalQwenModel(dict(config,device='cuda:0'))
         self.adapter.tokenizer.padding_side='left'
         self.limit=batch_size
+        self.dataset=dataset
 
     def generate(self, targets, retry=False):
         import torch
@@ -59,7 +60,8 @@ class BatchQwen:
             return []
         if len(targets)>self.limit:
             return [r for i in range(0,len(targets),self.limit) for r in self.generate(targets[i:i+self.limit],retry)]
-        system=PROMPT+(' Your previous proposal failed validation. Read the displayed reference fields again.' if retry else '')
+        system=PROMPT.format(dataset=self.dataset)+(
+            ' Your previous proposal failed validation. Read the displayed reference fields again.' if retry else '')
         tokenizer=self.adapter.tokenizer
         rendered=[tokenizer.apply_chat_template(
             [dict(role='system',content=system),dict(role='user',content=json.dumps(t,allow_nan=False))],
@@ -112,9 +114,9 @@ def review(model,points):
     return rows
 
 
-def write_events(case,outcomes,reference_sha):
+def write_events(case,outcomes,reference_sha,dataset='LTAFDB'):
     clock=AutonomousEvents('fixed',case['start_s'])
-    evidence=EvidenceLedger(EvidenceContext('ltafdb-full-reference-diagnostic',case['task_id'],
+    evidence=EvidenceLedger(EvidenceContext(f'{dataset.lower()}-full-reference-diagnostic',case['task_id'],
                                             case['record_id'],reference_sha))
     counts=Counter(events=len(case['intervals']))
     journal, events=[],[]
@@ -141,7 +143,7 @@ def write_events(case,outcomes,reference_sha):
             # below keeps the diagnostic availability clock separate from those historical coordinates.
             tick=(onset+offset)/2 if idx==0 else offset
             update=clock.apply(clock.cursor,tick,dict(event_action='OPEN' if idx==0 else 'CLOSE',
-                boundary=dict(kind='localized',time_s=time,evidence_id=key,source='LTAFDB_reference_diagnostic'),
+                boundary=dict(kind='localized',time_s=time,evidence_id=key,source=f'{dataset}_reference_diagnostic'),
                 pending=None,next_review_s=None,support_intervals=[],opposing_intervals=[],evidence_ids=[key],
                 reason='Qwen submitted the validated reference boundary'))['event_update']
             if idx==0:
@@ -169,6 +171,9 @@ def run(args):
     torch.set_num_interop_threads(1)
     packet=json.loads(args.input.read_bytes())
     config=json.loads(args.config.read_bytes())
+    dataset=packet.get('dataset','LTAFDB')
+    if dataset not in ('AFDB','LTAFDB'):
+        raise ValueError('Unsupported reference dataset')
     job=dict(input_sha256=digest(args.input),config_sha256=digest(args.config),
              reference_sha256=packet['reference_sha256'],batch_size=args.batch_size,protocol='paired-reference-point-v1')
     args.output.mkdir(parents=True,exist_ok=True)
@@ -197,13 +202,13 @@ def run(args):
                     raise ValueError('Wrong cached stage')
             else:
                 if model is None:
-                    model=BatchQwen(config,args.batch_size)
+                    model=BatchQwen(config,args.batch_size,dataset)
                 start=perf_counter()
                 ready=dict(job=job,points=review(model,batch),elapsed_s=perf_counter()-start)
                 atomic_json(sealed,ready)
             results.extend(ready['points'])
             print(record,f'{len(results)}/{len(points)}',round(ready['elapsed_s'],2),flush=True)
-        counts,events,journal=write_events(case,results,job['reference_sha256'])
+        counts,events,journal=write_events(case,results,job['reference_sha256'],dataset)
         write_jsonl(dest/'events.jsonl',events)
         write_jsonl(dest/'event_updates.jsonl',journal)
         write_jsonl(dest/'qwen_boundary_calls.jsonl',results)
